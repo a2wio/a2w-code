@@ -1,0 +1,21 @@
+FROM alpine:3.20
+
+ARG TERRAFORM_VERSION=1.9.8
+ARG KUSTOMIZE_VERSION=5.5.0
+
+RUN apk add --no-cache bash ca-certificates curl git unzip && \
+    case "$(uname -m)" in \
+      x86_64) export TOOL_ARCH="amd64" ;; \
+      aarch64|arm64) export TOOL_ARCH="arm64" ;; \
+      *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TOOL_ARCH}.zip" -o /tmp/terraform.zip && \
+    unzip /tmp/terraform.zip -d /usr/local/bin && \
+    rm /tmp/terraform.zip && \
+    curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_${TOOL_ARCH}.tar.gz" -o /tmp/kustomize.tar.gz && \
+    tar -xzf /tmp/kustomize.tar.gz -C /usr/local/bin && \
+    rm /tmp/kustomize.tar.gz && \
+    terraform version && \
+    kustomize version
+
+WORKDIR /workspace
