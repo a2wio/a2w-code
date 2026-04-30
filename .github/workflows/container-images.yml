@@ -34,7 +34,7 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: node --test tests/*.test.js
 
       - name: Set image tags
         id: meta
