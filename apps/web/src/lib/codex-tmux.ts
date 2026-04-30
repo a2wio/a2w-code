@@ -110,7 +110,13 @@ async function startCodexTmuxSession(input: CodexTmuxInput, sessionName: string)
   const model = input.workspace.codexModel || process.env.A2W_CODEX_MODEL;
   if (model) args.push("--model", model);
 
-  await tmux(["new-session", "-d", "-s", sessionName, "-c", repoRoot, shellJoin(args)]);
+  const command = [
+    shellJoin(args),
+    "status=$?",
+    "printf '\\nCodex exited with code %s. Review the output above, then close this session.\\n' \"$status\"",
+    "sleep 3600"
+  ].join("; ");
+  await tmux(["new-session", "-d", "-s", sessionName, "-c", repoRoot, command]);
 }
 
 async function sendLiteral(target: string, value: string) {
@@ -163,12 +169,21 @@ function codexBypassSandbox() {
 
 async function waitForCodexPrompt(target: string) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 12_000) {
+  const timeoutMs = Number(process.env.A2W_CODEX_READY_TIMEOUT_MS || 45_000);
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
     const output = await capturePane(target).catch(() => "");
+    if (output) lastOutput = output;
     if (codexPromptState(output).ready) return;
     await sleep(250);
   }
-  throw new Error("Codex started, but the interactive prompt did not become ready in time.");
+
+  const tail = lastOutput.split("\n").slice(-40).join("\n").trim();
+  throw new Error([
+    "Codex started, but the interactive prompt did not become ready in time.",
+    "This usually means Codex is waiting on login, stuck booting MCP/config, blocked by its internal sandbox, or the CLI prompt output changed.",
+    tail ? `\nLast Codex pane output:\n${tail}` : ""
+  ].filter(Boolean).join("\n"));
 }
 
 function codexPromptState(output: string) {
