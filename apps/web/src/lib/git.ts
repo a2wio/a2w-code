@@ -3,8 +3,9 @@ import { chmod, mkdir, mkdtemp, readdir, stat, unlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { workspaceRepoRoot } from "./data";
-import type { GitAuthMethod, GitCommit, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, WorkspaceDiffFile } from "./types";
+import { readData, workspaceRepoRoot } from "./data";
+import { decryptSecret } from "./secrets";
+import type { GitAuthMethod, GitCommit, GitConnection, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, WorkspaceDiffFile } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -172,7 +173,9 @@ export async function pushWorkspace(workspaceId: string) {
   const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
   if (!branch) throw new Error("Cannot push from a detached HEAD. Create or checkout a branch first.");
   const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
-  await git(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], 120_000);
+  await withWorkspaceGitAuth(workspaceId, async (env) => {
+    await gitWithEnv(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], env, 120_000);
+  });
   return getGitDetails(workspaceId);
 }
 
@@ -413,20 +416,48 @@ async function withGitAuth<T>(input: SetupWorkspaceRepositoryInput, callback: (e
   return callback({ GIT_TERMINAL_PROMPT: "0" });
 }
 
+async function withWorkspaceGitAuth<T>(workspaceId: string, callback: (env: Record<string, string>) => Promise<T>) {
+  const data = await readData();
+  const connection = data.gitConnections
+    .filter((item) => item.workspaceId === workspaceId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (!connection) return callback({ GIT_TERMINAL_PROMPT: "0", ...defaultSshEnv() });
+  return withGitConnectionAuth(connection, callback);
+}
+
+async function withGitConnectionAuth<T>(connection: GitConnection, callback: (env: Record<string, string>) => Promise<T>) {
+  if (connection.authMethod === "ssh" && connection.secrets?.sshPrivateKey) {
+    return withSshKey(decryptSecret(connection.secrets.sshPrivateKey), callback);
+  }
+  if (connection.authMethod === "token" && connection.secrets?.token) {
+    return withHttpsToken(connection.details.username || "x-access-token", decryptSecret(connection.secrets.token), callback);
+  }
+  return callback({ GIT_TERMINAL_PROMPT: "0", ...defaultSshEnv() });
+}
+
 async function withSshKey<T>(privateKey: string, callback: (env: Record<string, string>) => Promise<T>) {
   if (!privateKey.trim()) throw new Error("SSH private key is required for SSH Git auth.");
   const dir = await mkdtemp(join(tmpdir(), "a2w-git-"));
   const keyPath = join(dir, "key");
+  const knownHostsPath = join(dir, "known_hosts");
   await writeFile(keyPath, privateKey.endsWith("\n") ? privateKey : `${privateKey}\n`, "utf8");
+  await writeFile(knownHostsPath, "", "utf8");
   await chmod(keyPath, 0o600);
   try {
     return await callback({
       GIT_TERMINAL_PROMPT: "0",
-      GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`
+      GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${knownHostsPath}`
     });
   } finally {
     await unlink(keyPath).catch(() => undefined);
+    await unlink(knownHostsPath).catch(() => undefined);
   }
+}
+
+function defaultSshEnv() {
+  return {
+    GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
+  };
 }
 
 async function withHttpsToken<T>(username: string, token: string, callback: (env: Record<string, string>) => Promise<T>) {
