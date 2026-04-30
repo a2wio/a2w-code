@@ -9,6 +9,7 @@ import { Icon } from "./Icon";
 type OnboardingProvider = Extract<CloudProvider, "aws" | "azure">;
 type Field = [string, string, string, ("text" | "password")?];
 type CodexStatus = "idle" | "checking" | "ready" | "missing";
+type GitSetupStatus = "idle" | "running" | "ready" | "failed";
 type CredentialTestResult = { status: string; label: string; detail: string };
 type ProviderMeta = {
   label: string;
@@ -33,6 +34,7 @@ const onboardingSteps = [
   { section: "Git", title: "Git host", description: "Pick where Git lives." },
   { section: "Git", title: "Repository", description: "Import or clone." },
   { section: "Git", title: "Git access", description: "Configure auth profile." },
+  { section: "Git", title: "Confirm Git", description: "Clone and connect." },
   { section: "Codex", title: "Codex", description: "Verify local CLI auth." },
   { section: "Codex", title: "First resource", description: "Generate starter stack." }
 ];
@@ -81,12 +83,84 @@ const providerThemes = {
   }
 } satisfies Record<OnboardingProvider, ProviderTheme>;
 
-const gitProviders: Array<{ id: GitProvider; label: string; icon: string; body: string }> = [
-  { id: "github", label: "GitHub", icon: "fa-brands fa-github", body: "Use a GitHub repository or create one with a token." },
-  { id: "gitlab", label: "GitLab", icon: "fa-brands fa-gitlab", body: "Use a GitLab project remote." },
-  { id: "bitbucket", label: "Bitbucket", icon: "fa-brands fa-bitbucket", body: "Use a Bitbucket repository remote." },
-  { id: "azure-devops", label: "Azure DevOps", icon: "fa-brands fa-microsoft", body: "Use an Azure Repos Git remote." },
-  { id: "generic", label: "Other Git", icon: "fa-code-branch", body: "Use any SSH or HTTPS Git remote." }
+const gitProviders: Array<{
+  id: GitProvider;
+  label: string;
+  icon: string;
+  body: string;
+  activeCard: string;
+  activeIcon: string;
+  activeBadge: string;
+  idleCard: string;
+  idleIcon: string;
+  idleBadge: string;
+  glow: string;
+}> = [
+  {
+    id: "github",
+    label: "GitHub",
+    icon: "fa-brands fa-github",
+    body: "Use a GitHub repository or create one with a token.",
+    activeCard: "border-black bg-black text-white shadow-black/15",
+    activeIcon: "bg-white text-black",
+    activeBadge: "bg-white text-black",
+    idleCard: "border-gray-200 bg-white text-gray-700 shadow-black/5 hover:border-black/30",
+    idleIcon: "bg-gray-50 text-black",
+    idleBadge: "bg-gray-100 text-gray-500",
+    glow: "bg-black/10"
+  },
+  {
+    id: "gitlab",
+    label: "GitLab",
+    icon: "fa-brands fa-gitlab",
+    body: "Use a GitLab project remote.",
+    activeCard: "border-[#fc6d26] bg-[#fc6d26] text-white shadow-[#fc6d26]/20",
+    activeIcon: "bg-white text-[#fc6d26]",
+    activeBadge: "bg-white text-[#fc6d26]",
+    idleCard: "border-[#fc6d26]/20 bg-white text-gray-700 shadow-[#fc6d26]/10 hover:border-[#fc6d26]/45",
+    idleIcon: "bg-[#fc6d26]/10 text-[#fc6d26]",
+    idleBadge: "bg-[#fc6d26]/10 text-[#fc6d26]",
+    glow: "bg-[#fc6d26]/14"
+  },
+  {
+    id: "bitbucket",
+    label: "Bitbucket",
+    icon: "fa-brands fa-bitbucket",
+    body: "Use a Bitbucket repository remote.",
+    activeCard: "border-[#0052cc] bg-[#0052cc] text-white shadow-[#0052cc]/20",
+    activeIcon: "bg-white text-[#0052cc]",
+    activeBadge: "bg-white text-[#0052cc]",
+    idleCard: "border-[#0052cc]/20 bg-white text-gray-700 shadow-[#0052cc]/10 hover:border-[#0052cc]/45",
+    idleIcon: "bg-[#0052cc]/10 text-[#0052cc]",
+    idleBadge: "bg-[#0052cc]/10 text-[#0052cc]",
+    glow: "bg-[#0052cc]/14"
+  },
+  {
+    id: "azure-devops",
+    label: "Azure DevOps",
+    icon: "fa-brands fa-microsoft",
+    body: "Use an Azure Repos Git remote.",
+    activeCard: "border-[#0078d4] bg-[#0078d4] text-white shadow-[#0078d4]/20",
+    activeIcon: "bg-white text-[#0078d4]",
+    activeBadge: "bg-white text-[#0078d4]",
+    idleCard: "border-[#0078d4]/20 bg-white text-gray-700 shadow-[#0078d4]/10 hover:border-[#0078d4]/45",
+    idleIcon: "bg-[#0078d4]/10 text-[#0078d4]",
+    idleBadge: "bg-[#0078d4]/10 text-[#0078d4]",
+    glow: "bg-[#0078d4]/14"
+  },
+  {
+    id: "generic",
+    label: "Other Git",
+    icon: "fa-code-branch",
+    body: "Use any SSH or HTTPS Git remote.",
+    activeCard: "border-gray-800 bg-gray-800 text-white shadow-black/15",
+    activeIcon: "bg-white text-gray-800",
+    activeBadge: "bg-white text-gray-800",
+    idleCard: "border-gray-200 bg-white text-gray-700 shadow-black/5 hover:border-gray-400",
+    idleIcon: "bg-gray-100 text-gray-700",
+    idleBadge: "bg-gray-100 text-gray-500",
+    glow: "bg-gray-900/8"
+  }
 ];
 
 export function OnboardingFlow({
@@ -99,6 +173,7 @@ export function OnboardingFlow({
   const router = useRouter();
   const initial = cloudPreference === "azure" ? "azure" : "aws";
   const [step, setStep] = useState(0);
+  const [maxUnlockedStep, setMaxUnlockedStep] = useState(0);
   const [provider, setProvider] = useState<OnboardingProvider>(initial);
   const [details, setDetails] = useState<Record<string, string>>(() => initialDetails(initial));
   const [codexStatus, setCodexStatus] = useState<CodexStatus>("idle");
@@ -106,6 +181,8 @@ export function OnboardingFlow({
   const [codexModel, setCodexModel] = useState("");
   const [gitStatus, setGitStatus] = useState<GitWorkspaceStatus | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
+  const [gitSetupStatus, setGitSetupStatus] = useState<GitSetupStatus>("idle");
+  const [gitSetupMessage, setGitSetupMessage] = useState("");
   const [gitProvider, setGitProvider] = useState<GitProvider>("github");
   const [repositoryMode, setRepositoryMode] = useState<GitRepositoryMode>("dstack");
   const [repositoryUrl, setRepositoryUrl] = useState("");
@@ -121,11 +198,32 @@ export function OnboardingFlow({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const meta = providerDetails[provider];
+  const azureCredentialsVerified = provider === "azure" && credentialTest?.status === "connected";
+  const credentialsContinueLocked = credentialTesting || (provider === "azure" && !azureCredentialsVerified);
 
   useEffect(() => {
     setDetails(initialDetails(provider));
     setCredentialTest(null);
   }, [provider]);
+
+  function unlockStep(nextStep: number) {
+    setError(null);
+    setMaxUnlockedStep((current) => Math.max(current, nextStep));
+    setStep(nextStep);
+  }
+
+  function visitUnlockedStep(nextStep: number) {
+    if (nextStep <= maxUnlockedStep) {
+      setError(null);
+      setStep(nextStep);
+      return;
+    }
+    setError("Complete the current step before continuing.");
+  }
+
+  function lockAfter(stepIndex: number) {
+    setMaxUnlockedStep((current) => Math.min(current, stepIndex));
+  }
 
   async function complete() {
     setError(null);
@@ -187,11 +285,32 @@ export function OnboardingFlow({
 
   async function continueFromCodex() {
     if (codexStatus === "ready") {
-      setStep(8);
+      unlockStep(9);
       return;
     }
     const ready = await checkCodex();
-    if (ready) setStep(8);
+    if (ready) unlockStep(9);
+  }
+
+  function markGitSettingsDirty(stepIndex: number) {
+    lockAfter(stepIndex);
+    setGitSetupStatus("idle");
+    setGitSetupMessage("");
+  }
+
+  function gitPayload() {
+    return {
+      gitProvider,
+      repositoryMode,
+      repositoryUrl,
+      repositoryName,
+      repositoryOwner,
+      repositoryBranch,
+      gitAuthMethod,
+      gitUsername,
+      gitToken,
+      gitSshPrivateKey
+    };
   }
 
   async function refreshGit() {
@@ -212,34 +331,69 @@ export function OnboardingFlow({
     }
   }
 
-  async function continueFromGit() {
+  function validateGitSettings() {
     setError(null);
     if (repositoryMode === "existing" && !repositoryUrl.trim()) {
       setError("Enter the Git repository URL to clone.");
-      return;
+      return false;
     }
     if (repositoryMode === "dstack" && !repositoryName.trim()) {
       setError("Enter the repository name for the A2W best-practices import.");
-      return;
+      return false;
     }
     if (repositoryMode === "dstack" && !repositoryUrl.trim() && !(gitProvider === "github" && gitAuthMethod === "token")) {
       setError("Enter an empty remote repository URL, or use a GitHub HTTPS token so A2W can create the repository.");
-      return;
+      return false;
     }
     if (gitAuthMethod === "token" && !gitToken.trim()) {
       setError("Enter an HTTPS access token or choose no auth.");
-      return;
+      return false;
     }
     if (gitAuthMethod === "ssh" && !gitSshPrivateKey.trim()) {
       setError("Paste the SSH private key or choose no auth.");
+      return false;
+    }
+    return true;
+  }
+
+  async function continueFromGit() {
+    if (!validateGitSettings()) {
       return;
     }
     const current = gitStatus || await refreshGit();
     if (current?.available) {
-      setStep(7);
+      unlockStep(7);
       return;
     }
     setError(current?.message || "Git is not available on this host.");
+  }
+
+  async function confirmGitSettings() {
+    if (!validateGitSettings()) return;
+    setGitLoading(true);
+    setGitSetupStatus("running");
+    setGitSetupMessage("Setting up the local repository...");
+
+    try {
+      const response = await fetch("/api/onboarding/git/confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(gitPayload())
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not confirm Git settings.");
+      setGitStatus(data.git);
+      if (data.git?.remoteUrl) setRepositoryUrl(data.git.remoteUrl);
+      setGitSetupStatus("ready");
+      setGitSetupMessage("Git repository is connected and ready for Codex.");
+      setMaxUnlockedStep((current) => Math.max(current, 8));
+    } catch (err) {
+      setGitSetupStatus("failed");
+      setGitSetupMessage(err instanceof Error ? err.message : String(err));
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGitLoading(false);
+    }
   }
 
   async function testCredentials() {
@@ -270,7 +424,7 @@ export function OnboardingFlow({
   return (
     <main className="h-full min-h-0 overflow-hidden bg-paper p-3 text-black">
       <section className="grid h-full min-h-0 w-full grid-cols-12 gap-2">
-        <ProgressRail step={step} provider={provider} onStepClick={setStep} />
+        <ProgressRail step={step} maxUnlockedStep={maxUnlockedStep} provider={provider} onStepClick={visitUnlockedStep} />
         <div className="col-span-9 flex min-h-0 flex-col">
         {step === 0 ? (
           <Screen>
@@ -289,18 +443,24 @@ export function OnboardingFlow({
                 provider="aws"
                 title="AWS"
                 body="Create a Lambda function that returns your company greeting."
-                onClick={() => setProvider("aws")}
+                onClick={() => {
+                  lockAfter(0);
+                  setProvider("aws");
+                }}
               />
               <ProviderCard
                 active={provider === "azure"}
                 provider="azure"
                 title="Azure"
                 body="Create an Azure Function using the same greeting contract."
-                onClick={() => setProvider("azure")}
+                onClick={() => {
+                  lockAfter(0);
+                  setProvider("azure");
+                }}
               />
               <ComingSoonProviderCard className="md:col-start-1 md:row-start-2" />
             </div>
-            <Footer next={() => setStep(1)} />
+            <Footer next={() => unlockStep(1)} />
           </Screen>
         ) : null}
 
@@ -334,7 +494,7 @@ export function OnboardingFlow({
                 }
               />
             </div>
-            <Footer back={() => setStep(0)} next={() => setStep(2)} />
+            <Footer back={() => setStep(0)} next={() => unlockStep(2)} />
           </Screen>
         ) : null}
 
@@ -366,7 +526,7 @@ export function OnboardingFlow({
                 }
               />
             </div>
-            <Footer back={() => setStep(1)} next={() => setStep(3)} />
+            <Footer back={() => setStep(1)} next={() => unlockStep(3)} />
           </Screen>
         ) : null}
 
@@ -391,12 +551,18 @@ export function OnboardingFlow({
                 testResult={credentialTest}
                 onTest={testCredentials}
                 onFieldChange={(name, value) => {
+                  lockAfter(3);
                   setCredentialTest(null);
                   setDetails((current) => ({ ...current, [name]: value }));
                 }}
               />
             </div>
-            <Footer back={() => setStep(2)} next={() => setStep(4)} />
+            <Footer
+              back={() => setStep(2)}
+              next={() => unlockStep(4)}
+              disabled={credentialsContinueLocked}
+              nextLabel={credentialsContinueLocked && provider === "azure" ? "Test credentials first" : "Continue"}
+            />
           </Screen>
         ) : null}
 
@@ -413,10 +579,16 @@ export function OnboardingFlow({
                 </p>
               </div>
 
-              <GitProviderPanel provider={gitProvider} onProviderChange={setGitProvider} />
+              <GitProviderPanel
+                provider={gitProvider}
+                onProviderChange={(value) => {
+                  markGitSettingsDirty(4);
+                  setGitProvider(value);
+                }}
+              />
             </div>
             {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
-            <Footer back={() => setStep(3)} next={() => setStep(5)} />
+            <Footer back={() => setStep(3)} next={() => unlockStep(5)} />
           </Screen>
         ) : null}
 
@@ -440,15 +612,30 @@ export function OnboardingFlow({
                 repositoryOwner={repositoryOwner}
                 repositoryUrl={repositoryUrl}
                 repositoryBranch={repositoryBranch}
-                onModeChange={setRepositoryMode}
-                onRepositoryNameChange={setRepositoryName}
-                onRepositoryOwnerChange={setRepositoryOwner}
-                onRepositoryUrlChange={setRepositoryUrl}
-                onRepositoryBranchChange={setRepositoryBranch}
+                onModeChange={(value) => {
+                  markGitSettingsDirty(5);
+                  setRepositoryMode(value);
+                }}
+                onRepositoryNameChange={(value) => {
+                  markGitSettingsDirty(5);
+                  setRepositoryName(value);
+                }}
+                onRepositoryOwnerChange={(value) => {
+                  markGitSettingsDirty(5);
+                  setRepositoryOwner(value);
+                }}
+                onRepositoryUrlChange={(value) => {
+                  markGitSettingsDirty(5);
+                  setRepositoryUrl(value);
+                }}
+                onRepositoryBranchChange={(value) => {
+                  markGitSettingsDirty(5);
+                  setRepositoryBranch(value);
+                }}
               />
             </div>
             {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
-            <Footer back={() => setStep(4)} next={() => setStep(6)} />
+            <Footer back={() => setStep(4)} next={() => unlockStep(6)} />
           </Screen>
         ) : null}
 
@@ -474,10 +661,22 @@ export function OnboardingFlow({
                 sshPrivateKey={gitSshPrivateKey}
                 gitStatus={gitStatus}
                 loading={gitLoading}
-                onAuthMethodChange={setGitAuthMethod}
-                onUsernameChange={setGitUsername}
-                onTokenChange={setGitToken}
-                onSshPrivateKeyChange={setGitSshPrivateKey}
+                onAuthMethodChange={(value) => {
+                  markGitSettingsDirty(6);
+                  setGitAuthMethod(value);
+                }}
+                onUsernameChange={(value) => {
+                  markGitSettingsDirty(6);
+                  setGitUsername(value);
+                }}
+                onTokenChange={(value) => {
+                  markGitSettingsDirty(6);
+                  setGitToken(value);
+                }}
+                onSshPrivateKeyChange={(value) => {
+                  markGitSettingsDirty(6);
+                  setGitSshPrivateKey(value);
+                }}
                 onRefresh={refreshGit}
               />
             </div>
@@ -496,7 +695,7 @@ export function OnboardingFlow({
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-6 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 <Icon name={gitLoading ? "fa-circle-notch fa-spin" : "fa-arrow-right"} />
-                Continue to Codex
+                Review Git settings
               </button>
             </div>
           </Screen>
@@ -507,6 +706,54 @@ export function OnboardingFlow({
             <div className="grid max-w-3xl gap-6">
               <div>
                 <StepLabel step="8" />
+                <h1 className="mt-3 text-4xl font-semibold leading-[1.02] sm:text-5xl">
+                  Confirm Git settings.
+                </h1>
+                <p className="mt-4 text-base leading-7 text-gray-600">
+                  This runs the Git setup now: clone or import the repository, set the remote, and prepare the branch.
+                </p>
+              </div>
+
+              <GitConfirmPanel
+                gitProvider={gitProvider}
+                mode={repositoryMode}
+                repositoryUrl={repositoryUrl}
+                repositoryName={repositoryName}
+                repositoryOwner={repositoryOwner}
+                repositoryBranch={repositoryBranch}
+                authMethod={gitAuthMethod}
+                setupStatus={gitSetupStatus}
+                setupMessage={gitSetupMessage}
+                gitStatus={gitStatus}
+              />
+            </div>
+            {error && gitSetupStatus !== "failed" ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
+            <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
+              <button
+                type="button"
+                onClick={() => setStep(6)}
+                className="h-11 rounded-full border border-gray-200 bg-white px-6 text-sm font-semibold text-gray-700 transition hover:border-gray-300"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={gitSetupStatus === "ready" ? () => unlockStep(8) : confirmGitSettings}
+                disabled={gitLoading}
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-6 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                <Icon name={gitLoading ? "fa-circle-notch fa-spin" : gitSetupStatus === "ready" ? "fa-arrow-right" : "fa-check"} />
+                {gitSetupStatus === "ready" ? "Continue to Codex" : gitLoading ? "Setting up Git" : "Confirm and set up Git"}
+              </button>
+            </div>
+          </Screen>
+        ) : null}
+
+        {step === 8 ? (
+          <Screen>
+            <div className="grid max-w-3xl gap-6">
+              <div>
+                <StepLabel step="9" />
                 <h1 className="mt-3 text-4xl font-semibold leading-[1.02] sm:text-5xl">
                   Connect Codex on this host.
                 </h1>
@@ -578,7 +825,7 @@ export function OnboardingFlow({
             <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
               <button
                 type="button"
-                onClick={() => setStep(6)}
+                onClick={() => setStep(7)}
                 className="h-11 rounded-full border border-gray-200 bg-white px-6 text-sm font-semibold text-gray-700 transition hover:border-gray-300"
               >
                 Back
@@ -596,11 +843,11 @@ export function OnboardingFlow({
           </Screen>
         ) : null}
 
-        {step === 8 ? (
+        {step === 9 ? (
           <Screen>
             <div className="grid max-w-3xl gap-6">
               <div>
-                <StepLabel step="9" />
+                <StepLabel step="10" />
                 <h1 className="mt-3 text-4xl font-semibold leading-[1.02] sm:text-5xl">
                   Create the first resource.
                 </h1>
@@ -625,7 +872,7 @@ export function OnboardingFlow({
             <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
               <button
                 type="button"
-                onClick={() => setStep(7)}
+                onClick={() => setStep(8)}
                 className="h-11 rounded-full border border-gray-200 bg-white px-6 text-sm font-semibold text-gray-700 transition hover:border-gray-300"
               >
                 Back
@@ -654,14 +901,16 @@ function initialDetails(provider: OnboardingProvider) {
 
 function ProgressRail({
   step,
+  maxUnlockedStep,
   provider,
   onStepClick
 }: {
   step: number;
+  maxUnlockedStep: number;
   provider: OnboardingProvider;
   onStepClick: (step: number) => void;
 }) {
-  const progress = onboardingSteps.length <= 1 ? 100 : (step / (onboardingSteps.length - 1)) * 100;
+  const progress = onboardingSteps.length <= 1 ? 100 : (maxUnlockedStep / (onboardingSteps.length - 1)) * 100;
   const groups = groupedOnboardingSteps();
 
   return (
@@ -692,13 +941,13 @@ function ProgressRail({
           />
           {groups.map((group) => {
             const groupActive = step >= group.start && step <= group.end;
-            const groupCompleted = step > group.end;
+            const groupCompleted = maxUnlockedStep > group.end;
             const branchProgress = groupCompleted
               ? 1
-              : groupActive
+              : maxUnlockedStep >= group.start
                 ? group.items.length <= 1
                   ? 1
-                  : (step - group.start) / (group.items.length - 1)
+                  : (maxUnlockedStep - group.start) / (group.items.length - 1)
                 : 0;
 
             return (
@@ -725,30 +974,40 @@ function ProgressRail({
                     />
                     {group.items.map(({ item, index }) => {
                       const active = index === step;
-                      const completed = index < step;
+                      const unlocked = index <= maxUnlockedStep;
+                      const completed = index < maxUnlockedStep;
                       return (
                         <button
                           key={item.title}
                           type="button"
+                          disabled={!unlocked}
                           onClick={() => onStepClick(index)}
-                          className={`group relative grid h-11 grid-cols-[32px_1fr] items-center gap-2 rounded-[1.15rem] pl-0 pr-2 text-left transition ${
-                            active ? "bg-black text-white shadow-lg shadow-black/10" : completed ? "bg-white text-gray-900 hover:bg-gray-50" : "text-gray-500 hover:bg-white/70"
+                          className={`group relative grid h-11 grid-cols-[32px_minmax(0,1fr)] items-center gap-3 rounded-[1.15rem] pl-0 pr-3 text-left transition ${
+                            active
+                              ? "text-black"
+                              : completed
+                                ? "bg-white text-gray-900 hover:bg-gray-50"
+                                : unlocked
+                                  ? "text-gray-500 hover:bg-white/70"
+                                  : "cursor-not-allowed text-gray-300 opacity-70"
                           }`}
                         >
                           <span
                             className={`relative z-10 grid h-8 w-8 place-items-center rounded-full border text-[11px] font-semibold shadow-sm transition ${
                               active
-                                ? "border-white bg-white text-black"
+                                ? "border-black bg-black text-white shadow-black/15"
                                 : completed
                                   ? "border-black bg-black text-white"
-                                  : "border-gray-200 bg-white text-gray-500 group-hover:border-gray-300"
+                                  : unlocked
+                                    ? "border-gray-200 bg-white text-gray-500 group-hover:border-gray-300"
+                                    : "border-gray-100 bg-white text-gray-300"
                             }`}
                           >
-                            {completed ? <Icon name="fa-check" /> : index + 1}
+                            {completed ? <Icon name="fa-check" /> : unlocked ? index + 1 : <Icon name="fa-lock" />}
                           </span>
-                          <span className="min-w-0">
+                          <span className="min-w-0 pl-0.5">
                             <span className="block truncate text-sm font-semibold">{item.title}</span>
-                            <span className={`mt-0.5 block truncate text-xs ${active ? "text-white/70" : "text-gray-500"}`}>{item.description}</span>
+                            <span className={`mt-0.5 block truncate text-xs ${active ? "text-gray-700" : "text-gray-500"}`}>{item.description}</span>
                           </span>
                         </button>
                       );
@@ -889,7 +1148,7 @@ function GitProviderPanel({
   onProviderChange: (provider: GitProvider) => void;
 }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {gitProviders.map((item) => {
         const active = item.id === provider;
         return (
@@ -897,16 +1156,17 @@ function GitProviderPanel({
             key={item.id}
             type="button"
             onClick={() => onProviderChange(item.id)}
-            className={`rounded-[2rem] border p-5 text-left shadow-xl transition hover:-translate-y-0.5 ${
-              active ? "border-black bg-black text-white shadow-black/10" : "border-gray-200 bg-white text-gray-700 shadow-black/5 hover:border-gray-300"
+            className={`relative overflow-hidden rounded-[1.5rem] border p-4 text-left shadow-xl transition hover:-translate-y-0.5 ${
+              active ? item.activeCard : item.idleCard
             }`}
           >
-            <span className={`grid h-12 w-12 place-items-center rounded-2xl text-xl ${active ? "bg-white text-black" : "bg-gray-50 text-gray-700"}`}>
+            <span className={`pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full ${active ? "bg-white/15" : item.glow}`} />
+            <span className={`relative grid h-9 w-9 place-items-center rounded-xl text-base shadow-sm shadow-black/5 ${active ? item.activeIcon : item.idleIcon}`}>
               <Icon name={item.icon} />
             </span>
-            <h2 className="mt-5 text-2xl font-semibold">{item.label}</h2>
-            <p className={`mt-2 text-sm leading-6 ${active ? "text-white/70" : "text-gray-500"}`}>{item.body}</p>
-            <span className={`mt-5 inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${active ? "bg-white text-black" : "bg-gray-100 text-gray-500"}`}>
+            <h2 className="relative mt-4 text-lg font-semibold">{item.label}</h2>
+            <p className={`mt-1 text-xs leading-5 ${active ? "text-white/70" : "text-gray-500"}`}>{item.body}</p>
+            <span className={`relative mt-4 inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${active ? item.activeBadge : item.idleBadge}`}>
               {active ? "Selected" : "Select"}
             </span>
           </button>
@@ -1195,6 +1455,93 @@ function GitAccessPanel({
   );
 }
 
+function GitConfirmPanel({
+  gitProvider,
+  mode,
+  repositoryUrl,
+  repositoryName,
+  repositoryOwner,
+  repositoryBranch,
+  authMethod,
+  setupStatus,
+  setupMessage,
+  gitStatus
+}: {
+  gitProvider: GitProvider;
+  mode: GitRepositoryMode;
+  repositoryUrl: string;
+  repositoryName: string;
+  repositoryOwner: string;
+  repositoryBranch: string;
+  authMethod: GitAuthMethod;
+  setupStatus: GitSetupStatus;
+  setupMessage: string;
+  gitStatus: GitWorkspaceStatus | null;
+}) {
+  const provider = gitProviders.find((item) => item.id === gitProvider) || gitProviders[0];
+  const target = mode === "dstack"
+    ? repositoryUrl.trim() || [repositoryOwner.trim(), repositoryName.trim() || "a2w-infrastructure"].filter(Boolean).join("/")
+    : repositoryUrl.trim();
+  const branch = repositoryBranch.trim() || gitStatus?.branch || "provider default";
+  const authLabel = authMethod === "none" ? "Host/public auth" : authMethod === "token" ? "HTTPS token" : "SSH key";
+  const statusTone = setupStatus === "ready"
+    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    : setupStatus === "failed"
+      ? "border-red-200 bg-red-50 text-red-800"
+      : setupStatus === "running"
+        ? "border-blue-200 bg-blue-50 text-blue-800"
+        : "border-gray-200 bg-gray-50 text-gray-700";
+  const statusIcon = setupStatus === "ready"
+    ? "fa-check"
+    : setupStatus === "failed"
+      ? "fa-triangle-exclamation"
+      : setupStatus === "running"
+        ? "fa-circle-notch fa-spin"
+        : "fa-circle-info";
+
+  return (
+    <div className="overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-xl shadow-black/5">
+      <div className={`flex items-center justify-between gap-4 border-b p-5 ${provider.idleCard}`}>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-lg shadow-sm shadow-black/5 ${provider.idleIcon}`}>
+            <Icon name={provider.icon} />
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold text-gray-950">{provider.label}</p>
+            <p className="truncate text-sm text-gray-500">{mode === "dstack" ? "A2W best-practice import" : "Existing repository clone"}</p>
+          </div>
+        </div>
+        <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${provider.idleBadge}`}>
+          {authLabel}
+        </span>
+      </div>
+
+      <div className="grid gap-3 p-5 text-sm">
+        <SettingLine label="Target" value={target || "Remote URL required"} />
+        <SettingLine label="Branch" value={branch} />
+        <SettingLine label="Local action" value={mode === "dstack" ? "Clone DStack, set origin, push" : "Clone remote into workspace"} />
+        <SettingLine label="Workspace" value={gitStatus?.initialized ? "already initialized" : "not initialized yet"} />
+      </div>
+
+      <div className="border-t border-gray-100 p-5">
+        <div className={`flex items-start gap-3 rounded-[1.5rem] border p-4 ${statusTone}`}>
+          <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/80 text-xs">
+            <Icon name={statusIcon} />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">
+              {setupStatus === "ready" ? "Git is connected" : setupStatus === "failed" ? "Git setup failed" : setupStatus === "running" ? "Git setup running" : "Ready to run Git setup"}
+            </p>
+            <p className="mt-1 break-words text-xs leading-5 opacity-80">
+              {setupMessage || "Confirming will run the Git operation on this self-hosted machine."}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProviderSetupPanel({
   provider,
   title,
@@ -1439,7 +1786,17 @@ function SettingLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Footer({ back, next }: { back?: () => void; next: () => void }) {
+function Footer({
+  back,
+  next,
+  disabled = false,
+  nextLabel = "Continue"
+}: {
+  back?: () => void;
+  next: () => void;
+  disabled?: boolean;
+  nextLabel?: string;
+}) {
   return (
     <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
       {back ? (
@@ -1449,9 +1806,14 @@ function Footer({ back, next }: { back?: () => void; next: () => void }) {
       ) : (
         <span />
       )}
-      <button type="button" onClick={next} className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-6 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-gray-800">
-        <Icon name="fa-arrow-right" />
-        Continue
+      <button
+        type="button"
+        onClick={next}
+        disabled={disabled}
+        className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-6 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:shadow-none disabled:hover:translate-y-0"
+      >
+        <Icon name={disabled ? "fa-lock" : "fa-arrow-right"} />
+        {nextLabel}
       </button>
     </div>
   );

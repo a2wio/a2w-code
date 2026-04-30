@@ -5,12 +5,13 @@ import { getCodexLoginStatus } from "@/src/lib/codex";
 import { sanitizeCodexModel } from "@/src/lib/codex-models";
 import { updateData } from "@/src/lib/data";
 import { createHelloFunctionPlan, materializeHelloFunctionFiles } from "@/src/lib/first-resource";
-import { setupWorkspaceRepository } from "@/src/lib/git";
+import { getGitStatus } from "@/src/lib/git";
 import { errorJson, json } from "@/src/lib/http";
+import { cleanGitProvider, cleanRepositoryMode } from "@/src/lib/onboarding-git";
 import { publicProviderConnection, validateProviderConnection } from "@/src/lib/provider";
 import { encryptSecret } from "@/src/lib/secrets";
 import { terraformRootPathsFromPlan } from "@/src/lib/terraform-roots";
-import type { GitAuthMethod, GitConnection, GitProvider, GitRepositoryMode, ProviderConnection } from "@/src/lib/types";
+import type { ProviderConnection } from "@/src/lib/types";
 
 export const runtime = "nodejs";
 
@@ -35,30 +36,18 @@ export async function POST(request: NextRequest) {
         return errorJson("Codex is not authenticated on this host. Run `codex login`, then verify Codex in onboarding.", 400);
       }
     }
-    const gitProvider = cleanGitProvider(body.gitProvider);
-    const repositoryMode = cleanRepositoryMode(body.repositoryMode);
-    const gitAuthMethod = cleanGitAuthMethod(body.gitAuthMethod);
-    const repositoryUrl = String(body.repositoryUrl || "").trim();
-    const repositoryName = String(body.repositoryName || "").trim();
-    const repositoryOwner = String(body.repositoryOwner || "").trim();
-    const repositoryBranch = String(body.repositoryBranch || "").trim();
-    const gitUsername = String(body.gitUsername || "").trim();
-    const gitToken = String(body.gitToken || "");
-    const gitSshPrivateKey = String(body.gitSshPrivateKey || "");
+    const fallbackGitProvider = cleanGitProvider(body.gitProvider);
+    const fallbackRepositoryMode = cleanRepositoryMode(body.repositoryMode);
+    const gitConnection = context.data.gitConnections.find((item) => item.workspaceId === context.workspace.id);
+    const gitStatus = await getGitStatus(context.workspace.id);
+    if (!gitConnection || !gitStatus.initialized) {
+      return errorJson("Confirm Git settings before creating the first resource.", 400);
+    }
 
-    const gitStatus = await setupWorkspaceRepository(context.workspace.id, {
-      gitProvider,
-      mode: repositoryMode,
-      repositoryUrl,
-      repositoryName,
-      repositoryOwner,
-      branch: repositoryBranch,
-      authMethod: gitAuthMethod,
-      username: gitUsername,
-      token: gitToken,
-      sshPrivateKey: gitSshPrivateKey
-    });
-    const configuredRepositoryUrl = gitStatus.remoteUrl || repositoryUrl;
+    const gitProvider = gitConnection.gitProvider || fallbackGitProvider;
+    const repositoryMode = gitConnection.repositoryMode || fallbackRepositoryMode;
+    const repositoryBranch = gitConnection.branch || gitStatus.branch || "";
+    const configuredRepositoryUrl = gitConnection.repositoryUrl || gitStatus.remoteUrl || "";
 
     const createdAt = new Date().toISOString();
     const connection: ProviderConnection = {
@@ -74,32 +63,6 @@ export async function POST(request: NextRequest) {
       status: "connected",
       createdAt
     };
-    const gitConnection: GitConnection = {
-      id: randomUUID(),
-      workspaceId: context.workspace.id,
-      gitProvider,
-      repositoryMode,
-      repositoryUrl: configuredRepositoryUrl,
-      branch: repositoryBranch || undefined,
-      authMethod: gitAuthMethod,
-      details: {
-        repositoryUrl: configuredRepositoryUrl,
-        ...(repositoryName ? { repositoryName } : {}),
-        ...(repositoryOwner ? { repositoryOwner } : {}),
-        gitProvider,
-        ...(repositoryBranch ? { branch: repositoryBranch } : {}),
-        ...(gitUsername ? { username: gitUsername } : {}),
-        ...(gitAuthMethod === "token" && gitToken ? { tokenConfigured: "true" } : {}),
-        ...(gitAuthMethod === "ssh" && gitSshPrivateKey ? { sshKeyConfigured: "true" } : {})
-      },
-      secrets: {
-        ...(gitAuthMethod === "token" && gitToken ? { token: encryptSecret(gitToken) } : {}),
-        ...(gitAuthMethod === "ssh" && gitSshPrivateKey ? { sshPrivateKey: encryptSecret(gitSshPrivateKey) } : {})
-      },
-      status: "configured",
-      createdAt
-    };
-
     const workspaceForPlan = {
       ...context.workspace,
       cloudPreference: provider
@@ -129,8 +92,6 @@ export async function POST(request: NextRequest) {
         (item) => !(item.workspaceId === context.workspace.id && item.provider === provider)
       );
       data.providerConnections.push(connection);
-      data.gitConnections = data.gitConnections.filter((item) => item.workspaceId !== context.workspace.id);
-      data.gitConnections.push(gitConnection);
       data.chats.push({
         id: chatId,
         workspaceId: context.workspace.id,
@@ -169,13 +130,6 @@ export async function POST(request: NextRequest) {
         {
           id: randomUUID(),
           workspaceId: context.workspace.id,
-          type: "git.repository_configured",
-          label: repositoryMode === "dstack" ? "DStack repository configured" : "Existing Git repository configured",
-          createdAt
-        },
-        {
-          id: randomUUID(),
-          workspaceId: context.workspace.id,
           type: "plan.created",
           label: plan.title,
           createdAt
@@ -201,18 +155,4 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return errorJson(error, 400);
   }
-}
-
-function cleanRepositoryMode(value: unknown): GitRepositoryMode {
-  return value === "existing" ? "existing" : "dstack";
-}
-
-function cleanGitProvider(value: unknown): GitProvider {
-  if (value === "github" || value === "gitlab" || value === "bitbucket" || value === "azure-devops") return value;
-  return "generic";
-}
-
-function cleanGitAuthMethod(value: unknown): GitAuthMethod {
-  if (value === "ssh" || value === "token") return value;
-  return "none";
 }
