@@ -8,7 +8,7 @@
     "dev": "next dev -H 127.0.0.1 -p 5173",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 5173",
-    "test": "node --test",
+    "test": "node --test tests/*.test.js",
     "release:check": "sh scripts/release-check.sh",
     "release:archive": "sh scripts/package-release.sh",
     "sandbox:build": "podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox",
