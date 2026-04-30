@@ -168,7 +168,7 @@ export function SettingsPanel({
 
   function flash(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2200);
+    window.setTimeout(() => setToast(null), 2000);
   }
 
   async function signOut() {

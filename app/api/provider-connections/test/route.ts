@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { getCurrentContext, normalizeProvider } from "@/src/lib/auth";
 import { errorJson, json } from "@/src/lib/http";
+import { validateProviderConnection } from "@/src/lib/provider";
 import { decryptSecret } from "@/src/lib/secrets";
 
 export const runtime = "nodejs";
@@ -11,6 +12,28 @@ export async function POST(request: NextRequest) {
     if (!context) return errorJson("Unauthorized", 401);
     const body = await request.json();
     const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
+    const hasInlineCredentials = Object.keys(body).some((key) => key !== "provider");
+
+    if (hasInlineCredentials) {
+      const validation = validateProviderConnection(provider, body);
+      if (!validation.ok) return json({ errors: validation.errors }, 400);
+
+      if (provider === "azure") {
+        const result = await testAzureConnection(validation.sanitized, String(validation.secrets.clientSecret || ""));
+        return json({ result });
+      }
+
+      if (provider === "aws") {
+        return json({
+          result: {
+            status: "configured",
+            label: "AWS credential shape looks valid",
+            detail: "The role ARN, external ID, and region are present. Terraform plan remains the authoritative AWS permission check."
+          }
+        });
+      }
+    }
+
     const connection = context.data.providerConnections
       .filter((item) => item.workspaceId === context.workspace.id && item.provider === provider)
       .at(-1);

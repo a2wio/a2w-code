@@ -38,12 +38,13 @@ export function DashboardShell({
   const isChat = pathname === "/dashboard/agent";
   const isFiles = pathname === "/dashboard/files";
   const newChatActive = isChat && activeChatId === "new";
+  const editorMode = isChat && activeChatId !== "new";
 
   return (
-    <main className="h-screen overflow-hidden bg-white text-black">
+    <main className="h-full overflow-hidden border border-gray-200 bg-white text-black">
       <div className="flex h-full">
         <aside
-          className={`flex h-full shrink-0 flex-col border-r border-gray-200 bg-[#f7f7f4] transition-[width] duration-300 ${
+          className={`${editorMode ? "hidden" : "flex"} h-full shrink-0 flex-col border-r border-gray-200 bg-[#f7f7f4] transition-[width] duration-300 ${
             sidebarOpen ? "w-72" : "w-[4.5rem]"
           }`}
         >
@@ -55,7 +56,7 @@ export function DashboardShell({
                     A2W
                   </span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold">Terraform Garden</span>
+                    <span className="block truncate text-sm font-semibold">A2W-Codex-Terraform-v0.0.1</span>
                     <span className="block truncate text-xs text-gray-500">{workspace.companyName}</span>
                   </span>
                 </Link>
@@ -102,7 +103,7 @@ export function DashboardShell({
             </Link>
           </div>
 
-          <div className="thin-scrollbar min-h-0 flex-1 overflow-auto p-3">
+          <div className="sidebar-scrollbar min-h-0 flex-1 overflow-auto p-3">
             <div className="grid gap-1.5">
               {threads.map((thread) => {
                 const active = isChat && thread.id === activeChatId;
@@ -128,7 +129,7 @@ export function DashboardShell({
             </div>
           </div>
 
-          <nav className="h-[169px] border-t border-gray-200 p-3">
+          <nav className="h-[156px] border-t border-gray-200 p-3">
             <div className="grid gap-1.5">
               {navItems.map(([slug, label]) => {
                 const href = `/dashboard/${slug}`;

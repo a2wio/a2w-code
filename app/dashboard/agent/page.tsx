@@ -4,6 +4,7 @@ import { requireDashboardData } from "@/src/lib/dashboard";
 export default async function AgentPage({ searchParams }: { searchParams: Promise<{ prompt?: string; chat?: string }> }) {
   const data = await requireDashboardData();
   const params = await searchParams;
+  const activeProviderConnection = data.providerConnections.find((connection) => connection.provider === data.workspace.cloudPreference);
   return (
     <AgentChat
       chats={data.chats}
@@ -13,6 +14,7 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
       terraformRoots={data.terraformRoots}
       gitStatus={data.gitStatus}
       provider={data.workspace.cloudPreference}
+      providerConnection={activeProviderConnection}
       selectedTerraformRoot={data.workspace.selectedTerraformRoot}
       initialPrompt={params.prompt}
       initialChatId={params.chat}

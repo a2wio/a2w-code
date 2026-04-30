@@ -5,13 +5,36 @@
 }
 
 html {
+  height: 100%;
+  overflow: hidden;
   scroll-behavior: smooth;
 }
 
 body {
-  background: #f7f7f4;
+  height: 100dvh;
+  min-height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+  background: #5c4ee5;
   color: #111111;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app-frame {
+  height: calc(100dvh - 16px);
+  margin: 8px;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #f7f7f4;
+}
+
+.app-frame > * {
+  height: 100%;
+  min-height: 0;
+}
+
+.app-frame > .h-screen {
+  height: 100%;
 }
 
 button,
@@ -59,6 +82,25 @@ textarea {
 .thin-scrollbar::-webkit-scrollbar-thumb {
   background: #d1d5db;
   border-radius: 999px;
+}
+
+.sidebar-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 17, 17, 0.16) transparent;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar {
+  width: 1px;
+  height: 1px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(17, 17, 17, 0.16);
+  border-radius: 999px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 @keyframes enter {

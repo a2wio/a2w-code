@@ -11,7 +11,7 @@ export function Brand({ dark = false }: { dark?: boolean }) {
         A2W
       </span>
       <span>
-        <span className={`block text-sm font-semibold ${dark ? "text-white" : "text-black"}`}>Terraform Garden</span>
+        <span className={`block text-sm font-semibold ${dark ? "text-white" : "text-black"}`}>A2W-Codex-Terraform-v0.0.1</span>
         <span className="block text-xs text-gray-500">Prompt-operated cloud work</span>
       </span>
     </Link>

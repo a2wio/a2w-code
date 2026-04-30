@@ -15,6 +15,7 @@ export const EMPTY_DATA: AppData = {
   workspaces: [],
   chats: [],
   providerConnections: [],
+  gitConnections: [],
   messages: [],
   plans: [],
   events: [],

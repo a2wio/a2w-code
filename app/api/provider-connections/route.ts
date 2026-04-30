@@ -15,7 +15,12 @@ export async function POST(request: NextRequest) {
     if (!context) return errorJson("Unauthorized", 401);
     const body = await request.json();
     const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
-    const validation = validateProviderConnection(provider, body);
+    const existing = context.data.providerConnections
+      .filter((item) => item.workspaceId === context.workspace.id && item.provider === provider)
+      .at(-1);
+    const preserveAzureSecret = provider === "azure" && !String(body.clientSecret || "").trim() && Boolean(existing?.secrets?.clientSecret);
+    const validationPayload = preserveAzureSecret ? { ...body, clientSecret: "__existing_client_secret__" } : body;
+    const validation = validateProviderConnection(provider, validationPayload);
     if (!validation.ok) return json({ errors: validation.errors }, 400);
 
     const connection = await updateData((data) => {
@@ -29,7 +34,11 @@ export async function POST(request: NextRequest) {
           ...validation.sanitized,
           ...(provider === "azure" ? { clientSecretConfigured: "true" } : {})
         },
-        secrets: provider === "azure" ? { clientSecret: encryptSecret(String(validation.secrets.clientSecret)) } : undefined,
+        secrets: provider === "azure"
+          ? preserveAzureSecret
+            ? existing?.secrets
+            : { clientSecret: encryptSecret(String(validation.secrets.clientSecret)) }
+          : undefined,
         status: "connected",
         createdAt
       };

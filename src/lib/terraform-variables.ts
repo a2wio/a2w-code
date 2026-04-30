@@ -51,7 +51,7 @@ export function sanitizeTerraformVariableValue(name: string, value: unknown) {
   const cleanValue = String(value || "").trim();
   if (!cleanValue) throw new Error(`${cleanName} is required.`);
   if (cleanName.toLowerCase().includes("private_key") || /PRIVATE KEY/.test(cleanValue)) {
-    throw new Error("Private keys must not be stored in Terraform Garden. Provide public keys or external secret references only.");
+    throw new Error("Private keys must not be stored in A2W-Codex-Terraform-v0.0.1. Provide public keys or external secret references only.");
   }
   return { name: cleanName, value: cleanValue, sensitive: looksSensitive(cleanName) };
 }

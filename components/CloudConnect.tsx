@@ -76,7 +76,7 @@ export function CloudConnect({
     setProvider(modalProvider);
     setModalProvider(null);
     setToast(`${providers[modalProvider].label} trust connected`);
-    window.setTimeout(() => setToast(null), 2200);
+    window.setTimeout(() => setToast(null), 2000);
     router.refresh();
   }
 

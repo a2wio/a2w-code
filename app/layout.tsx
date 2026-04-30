@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "A2W Infra Agent",
+  title: "A2W-Codex-Terraform-v0.0.1",
   description: "Agent-native infrastructure operations with Terraform, GitOps, and sandboxed execution."
 };
 
@@ -15,7 +15,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <div className="app-frame">{children}</div>
+      </body>
     </html>
   );
 }

@@ -34,12 +34,15 @@ export function AuthForm() {
   }
 
   return (
-    <div className="motion-enter w-full max-w-[500px] rounded-[2rem] border border-gray-200 bg-white/85 p-6 shadow-2xl shadow-black/10 backdrop-blur sm:p-8">
+    <div className="motion-enter w-full max-w-[460px] p-2 sm:p-4">
       <div className="mb-8">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">Self-hosted console</p>
+        <span className="grid h-10 w-10 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white shadow-sm shadow-black/10">
+          A2W
+        </span>
+        <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">A2W-Codex-Terraform-v0.0.1</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Sign in</h1>
         <p className="mt-3 text-sm leading-6 text-gray-600">
-          Use the instance admin credentials configured on this self-hosted A2W server.
+          Use the local admin credentials for this self-hosted instance.
         </p>
       </div>
 
@@ -65,7 +68,7 @@ export function AuthForm() {
         </button>
       </form>
 
-      <div className="mt-6 rounded-[1.5rem] bg-gray-50 p-4 text-xs leading-6 text-gray-500">
+      <div className="mt-6 rounded-[1.5rem] border border-gray-200 bg-[#eeeeec] p-4 text-xs leading-6 text-gray-500">
         Configure <code className="rounded bg-white px-1.5 py-1">A2W_ADMIN_USERNAME</code> and{" "}
         <code className="rounded bg-white px-1.5 py-1">A2W_ADMIN_PASSWORD</code> before exposing this UI beyond localhost.
       </div>
@@ -97,7 +100,7 @@ function Field({
         defaultValue={defaultValue}
         placeholder={placeholder}
         autoComplete={autoComplete}
-        className="h-12 rounded-2xl border border-gray-200 bg-white px-4 text-black outline-none transition focus:border-black"
+        className="h-12 rounded-2xl border border-gray-200 bg-[#eeeeec] px-4 text-black outline-none transition focus:border-black focus:bg-white"
       />
     </label>
   );

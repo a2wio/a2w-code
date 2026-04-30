@@ -196,8 +196,9 @@ ${input.message}
 Execution contract:
 - Work only inside the current repository.
 - You may create or edit Terraform, app, README, and operational notes files.
-- Treat this repository as one shared A2W workspace. Chats share files and Codex context, but Terraform state belongs to provider call directories, not chats.
-- When an active Terraform root is selected, treat it as the current operator context. If the request says to work "here", "this stack", or "this directory", use that active root and its matching module.
+- Treat this chat as a persistent Codex conversation for the selected operator context. The platform resumes your Codex thread for follow-up messages in the same chat.
+- Treat this repository as one shared A2W workspace. Chats share files, but Terraform state belongs to provider call directories, not chats.
+- When an active Terraform root is selected, treat it like the current terminal directory in an editor/tmux workflow. If the request says to work "here", "this stack", or "this directory", use that active root and its matching module.
 - Follow the DStack Terraform layout exactly:
   - Put reusable resource implementation in infrastructure/terraform/modules/<provider>/<module>.
   - Put deployable call directories in infrastructure/terraform/providers/<provider>/<region>/<stack>.

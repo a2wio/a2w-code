@@ -21,6 +21,10 @@ export type Workspace = {
   codexEnabled?: boolean;
   codexModel?: string;
   selectedTerraformRoot?: string;
+  gitProvider?: GitProvider;
+  repositoryMode?: GitRepositoryMode;
+  repositoryUrl?: string;
+  repositoryBranch?: string;
 };
 
 export type EncryptedSecret = {
@@ -39,6 +43,24 @@ export type ProviderConnection = {
   details: Record<string, string>;
   secrets?: Record<string, EncryptedSecret>;
   status: "connected" | "connected_mock";
+  createdAt: string;
+};
+
+export type GitRepositoryMode = "dstack" | "existing";
+export type GitAuthMethod = "none" | "ssh" | "token";
+export type GitProvider = "github" | "gitlab" | "bitbucket" | "azure-devops" | "generic";
+
+export type GitConnection = {
+  id: string;
+  workspaceId: string;
+  gitProvider?: GitProvider;
+  repositoryMode: GitRepositoryMode;
+  repositoryUrl: string;
+  branch?: string;
+  authMethod: GitAuthMethod;
+  details: Record<string, string>;
+  secrets?: Record<string, EncryptedSecret>;
+  status: "configured";
   createdAt: string;
 };
 
@@ -104,6 +126,7 @@ export type Event = {
   type:
     | "workspace.registered"
     | "workspace.onboarding_completed"
+    | "git.repository_configured"
     | "provider.connected"
     | "plan.created"
     | "plan.files_materialized"
@@ -223,6 +246,8 @@ export type WorkspaceDiffFile = {
 export type GitWorkspaceStatus = {
   available: boolean;
   initialized: boolean;
+  repositoryName?: string;
+  remoteUrl?: string;
   branch?: string;
   clean: boolean;
   files: WorkspaceDiffFile[];
@@ -234,6 +259,7 @@ export type AppData = {
   workspaces: Workspace[];
   chats: Chat[];
   providerConnections: ProviderConnection[];
+  gitConnections: GitConnection[];
   messages: Message[];
   plans: InfraPlan[];
   events: Event[];

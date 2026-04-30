@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 import { getCurrentContext, normalizeProvider } from "@/src/lib/auth";
-import { codexBackendEnabled, runCodexWorkspaceAgent } from "@/src/lib/codex";
+import { codexBackendEnabled } from "@/src/lib/codex";
+import { sendCodexTmuxMessage } from "@/src/lib/codex-tmux";
 import { CODEX_MODEL_OPTIONS, sanitizeCodexModel } from "@/src/lib/codex-models";
 import { updateData } from "@/src/lib/data";
 import { createHelloFunctionPlan, materializeHelloFunctionFiles } from "@/src/lib/first-resource";
@@ -22,8 +23,11 @@ export async function POST(request: NextRequest) {
     if (!message) return errorJson("Message is required.", 400);
     const selectedRootPath = body.rootPath ? validateTerraformRootPath(String(body.rootPath)) : context.workspace.selectedTerraformRoot;
     const chat = await ensureChat(context.workspace.id, String(body.chatId || ""), message);
+    const codexEnabled = codexBackendEnabled(context.workspace);
 
-    const commandResponse = await handleFastChatPath(message, chat, context.workspace.codexModel, context.data);
+    const commandResponse = codexEnabled && message.startsWith("/")
+      ? null
+      : await handleFastChatPath(message, chat, context.workspace.codexModel, context.data);
     if (commandResponse) return json(commandResponse, 201);
 
     const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
@@ -32,24 +36,37 @@ export async function POST(request: NextRequest) {
       .find((item) => item.workspaceId === context.workspace.id && item.provider === provider);
 
     const createdAt = new Date().toISOString();
-    const serverlessIntent = /lambda|function|serverless|hello/i.test(message);
+    if (codexEnabled) {
+      const isSlashCommand = message.startsWith("/");
+      const userMessage: Message | null = isSlashCommand ? null : {
+        id: randomUUID(),
+        workspaceId: context.workspace.id,
+        chatId: chat.id,
+        role: "user",
+        content: message,
+        createdAt
+      };
+      const pane = await sendCodexTmuxMessage({
+        message,
+        workspace: context.workspace,
+        providerConnection,
+        provider,
+        chat,
+        selectedRootPath
+      });
+
+      await updateData((data) => {
+        const storedChat = data.chats.find((item) => item.id === chat.id && item.workspaceId === context.workspace.id);
+        if (storedChat) storedChat.updatedAt = createdAt;
+        if (userMessage) data.messages.push(userMessage);
+      });
+
+      return json({ messages: userMessage ? [userMessage] : [], chat, pane }, 201);
+    }
+
+    const serverlessIntent = !codexEnabled && /lambda|function|serverless|hello/i.test(message);
     const supportedServerlessProvider = provider === "azure" ? "azure" : "aws";
-    const codexRun = !serverlessIntent && codexBackendEnabled(context.workspace)
-      ? await runCodexWorkspaceAgent({
-          message,
-          workspace: context.workspace,
-          providerConnection,
-          provider,
-          codexThreadId: chat.codexThreadId,
-          selectedRootPath
-        })
-      : null;
-    const assistant = codexRun
-      ? {
-          response: codexRun.finalMessage,
-          plan: codexRun.plan
-        }
-      : serverlessIntent
+    const assistant = serverlessIntent
         ? {
             response: `${
               supportedServerlessProvider === "aws" ? "AWS Lambda" : "Azure Function"
@@ -69,9 +86,7 @@ export async function POST(request: NextRequest) {
       chatId: chat.id,
       createdAt
     };
-    const materializedFiles = codexRun
-      ? codexRun.changedFiles
-      : serverlessIntent
+    const materializedFiles = serverlessIntent
         ? await materializeHelloFunctionFiles(context.workspace, plan)
         : await materializePlanFiles(context.workspace, plan);
     plan.materializedFiles = materializedFiles;
@@ -98,7 +113,6 @@ export async function POST(request: NextRequest) {
       const storedChat = data.chats.find((item) => item.id === chat.id && item.workspaceId === context.workspace.id);
       if (storedChat) {
         storedChat.updatedAt = createdAt;
-        if (codexRun?.codexThreadId) storedChat.codexThreadId = codexRun.codexThreadId;
       }
       data.messages.push(userMessage, assistantMessage);
       data.plans.push(plan);
@@ -123,7 +137,7 @@ export async function POST(request: NextRequest) {
       });
     });
 
-    return json({ messages: [userMessage, assistantMessage], plan, chat: { ...chat, codexThreadId: codexRun?.codexThreadId || chat.codexThreadId } }, 201);
+    return json({ messages: [userMessage, assistantMessage], plan, chat }, 201);
   } catch (error) {
     return errorJson(error, 400);
   }
@@ -178,33 +192,6 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
         if (!workspace) throw new Error("Workspace not found.");
         workspace.codexModel = nextModel || undefined;
       }
-      const storedChat = data.chats.find((item) => item.id === chat.id && item.workspaceId === chat.workspaceId);
-      if (storedChat) storedChat.updatedAt = createdAt;
-      data.messages.push(userMessage, assistantMessage);
-    });
-    return { messages: [userMessage, assistantMessage], chat };
-  }
-
-  if (/^(hey|hi|hello|yo|sup|thanks|thank you|ok|okay)$/i.test(message)) {
-    const createdAt = new Date().toISOString();
-    const userMessage: Message = {
-      id: randomUUID(),
-      workspaceId: chat.workspaceId,
-      chatId: chat.id,
-      role: "user",
-      content: message,
-      createdAt
-    };
-    const assistantMessage: Message = {
-      id: randomUUID(),
-      workspaceId: chat.workspaceId,
-      chatId: chat.id,
-      role: "assistant",
-      content: "Hey. Send the infrastructure or app change you want implemented, or use `/model` to view/change the Codex model.",
-      createdAt
-    };
-
-    await updateData((data) => {
       const storedChat = data.chats.find((item) => item.id === chat.id && item.workspaceId === chat.workspaceId);
       if (storedChat) storedChat.updatedAt = createdAt;
       data.messages.push(userMessage, assistantMessage);
