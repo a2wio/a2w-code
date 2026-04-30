@@ -827,7 +827,8 @@ export function OnboardingFlow({
 
         {step === 8 ? (
           <Screen>
-            <div className="grid max-w-3xl gap-6">
+            <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="grid max-w-3xl gap-6 pb-2">
               <div>
                 <StepLabel step="9" />
                 <h1 className="mt-3 text-4xl font-semibold leading-[1.02] sm:text-5xl">
@@ -924,6 +925,7 @@ export function OnboardingFlow({
 
                 {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
               </div>
+            </div>
             </div>
             <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
               <button
