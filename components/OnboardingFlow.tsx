@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { CloudProvider, GitAuthMethod, GitProvider, GitRepositoryMode, GitWorkspaceStatus } from "@/src/lib/types";
 import { CODEX_MODEL_OPTIONS } from "@/src/lib/codex-models";
+import { AppLogo } from "./AppLogo";
 import { Icon } from "./Icon";
 
 type OnboardingProvider = Extract<CloudProvider, "aws" | "azure">;
@@ -1022,9 +1023,7 @@ function ProgressRail({
     <aside className="col-span-3 flex min-h-0 flex-col rounded-[2rem] border border-gray-200 bg-white/70 p-4 shadow-2xl shadow-black/10 backdrop-blur">
       <div className="shrink-0">
         <div className="flex items-start gap-3">
-          <span className="grid h-10 w-10 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white shadow-sm">
-            A2W
-          </span>
+          <AppLogo decorative className="h-10 w-10" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-black">A2W-Codex-Terraform-v0.0.1</p>
             <div className="mt-2 flex items-center justify-between gap-2">

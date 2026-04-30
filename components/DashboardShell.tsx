@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import type { Chat, InfraPlan, Message, ProviderConnection, Workspace } from "@/src/lib/types";
+import { AppLogo } from "./AppLogo";
 import { Icon } from "./Icon";
 import { Modal } from "./Modal";
 import { SettingsPanel } from "./SettingsPanel";
@@ -244,7 +245,7 @@ function CompactSidebar({
           aria-label={`Open ${workspace.companyName} navigation`}
           title="Open navigation"
         >
-          A2W
+          <AppLogo decorative className="h-10 w-10" />
         </button>
       </div>
 
@@ -378,9 +379,7 @@ function ExpandedSidebar({
       <div className="border-b border-gray-200 px-3">
         <div className="flex h-[65px] items-center gap-3">
           <Link href={homeHref} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-3" aria-label="A2W chat home">
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#5c4ee5] text-[11px] font-semibold text-white">
-              A2W
-            </span>
+            <AppLogo decorative className="h-10 w-10 shrink-0" />
             <span className="min-w-0">
               <span className="block truncate text-sm font-semibold">A2W-Codex-Terraform-v0.0.1</span>
               <span className="block truncate text-xs text-gray-500">{workspace.companyName}</span>

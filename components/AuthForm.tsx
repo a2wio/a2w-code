@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AppLogo } from "./AppLogo";
 import { Icon } from "./Icon";
 
 export function AuthForm({ defaultUsername = "admin" }: { defaultUsername?: string }) {
@@ -36,9 +37,7 @@ export function AuthForm({ defaultUsername = "admin" }: { defaultUsername?: stri
   return (
     <div className="motion-enter w-full max-w-[460px] p-2 sm:p-4">
       <div className="mb-8">
-        <span className="grid h-10 w-10 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white shadow-sm shadow-black/10">
-          A2W
-        </span>
+        <AppLogo decorative className="h-10 w-10" />
         <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">A2W-Codex-Terraform-v0.0.1</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Sign in</h1>
         <p className="mt-3 text-sm leading-6 text-gray-600">

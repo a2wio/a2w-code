@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import { AppLogo } from "@/components/AppLogo";
 import { AuthForm } from "@/components/AuthForm";
 import { configuredAdminUsername, getCurrentContext } from "@/src/lib/auth";
 
@@ -13,9 +14,7 @@ export default async function AuthPage() {
         <div className="grid gap-12">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white shadow-lg shadow-black/20">
-                A2W
-              </span>
+              <AppLogo decorative className="h-10 w-10" />
               <span>
                 <span className="block text-sm font-semibold">A2W-Codex-Terraform-v0.0.1</span>
                 <span className="block text-xs text-white/60">Self-hosted infra workbench</span>
@@ -53,9 +52,7 @@ function AuthLogoStrip() {
         <CodexLogo />
       </LogoMark>
       <PlusMark />
-      <div className="grid h-16 w-16 place-items-center rounded-[1.15rem] bg-black text-xs font-semibold text-white shadow-2xl shadow-black/25">
-        A2W
-      </div>
+      <AppLogo decorative className="h-16 w-16" roundedClassName="rounded-[1.15rem]" />
       <PlusMark />
       <LogoMark>
         <TerraformLogo />
