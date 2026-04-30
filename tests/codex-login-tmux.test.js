@@ -24,5 +24,5 @@ test("ignores localhost browser login URLs", () => {
   ].join("\n"));
 
   assert.equal(parsed?.userCode, undefined);
-  assert.equal(parsed?.verificationUrl?.includes("localhost"), false);
+  assert.equal(parsed?.verificationUrl, undefined);
 });
