@@ -1,6 +1,6 @@
 # Release Guide
 
-This release is packaged for self-hosted operation. The image includes the Codex CLI, Git, tmux, and Podman tooling. The host-first path still requires those tools on the host. Kubernetes deployments can run Terraform through short-lived in-cluster Jobs instead of a host Podman socket.
+This release is packaged for self-hosted operation. The image includes the Codex CLI, Terraform CLI, Git, tmux, and Podman tooling. The host-first path still requires those tools on the host. Kubernetes deployments can run Terraform through short-lived in-cluster Jobs instead of a host Podman socket.
 
 ## Runtime Requirements
 
@@ -8,6 +8,7 @@ This release is packaged for self-hosted operation. The image includes the Codex
 - npm
 - Git
 - tmux
+- Terraform CLI for host-first Codex-side checks. The container image already includes it.
 - Podman with a working Linux machine/socket for host-first sandbox runs
 - Codex CLI for host-first deployment. The container image already includes it.
 - A private network or reverse proxy with authentication/TLS if exposed beyond localhost
@@ -53,7 +54,7 @@ Open `http://127.0.0.1:5173`.
 
 ## Container Image
 
-The app image includes the Next.js server, Codex CLI, Git, SSH client, tmux, and Podman tooling. It is useful for a Linux self-host where the app container can reach the host Podman socket. The app still executes Terraform through the separate `a2w-infra-sandbox:latest` image.
+The app image includes the Next.js server, Codex CLI, Terraform CLI, Git, SSH client, tmux, and Podman tooling. It is useful for a Linux self-host where the app container can reach the host Podman socket. The app still executes gated Terraform actions through the separate `a2w-infra-sandbox:latest` image.
 
 ```sh
 cd apps/web

@@ -9,6 +9,7 @@ The MVP is single-admin and single-instance. Credentials are stored locally in `
 - Next.js, React, TypeScript, Tailwind CSS
 - Local JSON state in `.data/`
 - Codex CLI for chat-driven repository edits
+- Terraform CLI in the web image for Codex-side static checks
 - Terraform sandbox via local Podman or Kubernetes Jobs
 - DStack-style Terraform layout:
   - modules: `infrastructure/terraform/modules/<provider>/<module>`

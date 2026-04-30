@@ -13,6 +13,9 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS runner
 
+ARG TARGETARCH=amd64
+ARG TERRAFORM_VERSION=1.9.8
+
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     A2W_PROJECT_ROOT=/app \
@@ -20,8 +23,13 @@ ENV NODE_ENV=production \
     PORT=5173
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates git openssh-client podman tini tmux && \
+    apt-get install -y --no-install-recommends ca-certificates curl git openssh-client podman tini tmux unzip && \
     rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" && \
+    unzip /tmp/terraform.zip -d /usr/local/bin && \
+    rm /tmp/terraform.zip && \
+    terraform -version
 
 RUN npm install -g @openai/codex && codex --version
 
