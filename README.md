@@ -1,4 +1,4 @@
-# A2W Infra Agent Console
+# <img src="./public/a2w-codex-logo.png" width="20"/> A2W Infra Agent Console
 
 Self-hosted infrastructure editor for platform engineers. A2W combines a Codex-backed chat, a Terraform repository browser, Git controls, and gated sandbox actions for `fmt`, `plan`, `apply`, and `destroy`.
 

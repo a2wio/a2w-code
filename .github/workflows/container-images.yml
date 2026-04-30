@@ -5,6 +5,20 @@ on:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/container-images.yml"
+      - "app/**"
+      - "components/**"
+      - "src/**"
+      - "sandbox/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "Containerfile"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.mjs"
+      - "postcss.config.mjs"
+      - "tsconfig.json"
     tags:
       - "v*"
 
