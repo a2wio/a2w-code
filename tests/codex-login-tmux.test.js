@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseCodexDeviceAuth } from "../src/lib/codex-login-tmux.ts";
+import { parseCodexDeviceAuth } from "../src/lib/codex-login-parser.ts";
 
 test("parses Codex device auth URL and user code", () => {
   const parsed = parseCodexDeviceAuth([
