@@ -8,7 +8,7 @@ import { Icon } from "./Icon";
 
 type OnboardingProvider = Extract<CloudProvider, "aws" | "azure">;
 type Field = [string, string, string, ("text" | "password")?];
-type CodexStatus = "idle" | "checking" | "ready" | "missing";
+type CodexStatus = "idle" | "checking" | "login" | "ready" | "missing";
 type GitSetupStatus = "idle" | "running" | "ready" | "failed";
 type CredentialTestResult = { status: string; label: string; detail: string };
 type ProviderMeta = {
@@ -178,6 +178,7 @@ export function OnboardingFlow({
   const [details, setDetails] = useState<Record<string, string>>(() => initialDetails(initial));
   const [codexStatus, setCodexStatus] = useState<CodexStatus>("idle");
   const [codexOutput, setCodexOutput] = useState("");
+  const [codexLoginRunning, setCodexLoginRunning] = useState(false);
   const [codexModel, setCodexModel] = useState("");
   const [gitStatus, setGitStatus] = useState<GitWorkspaceStatus | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
@@ -205,6 +206,36 @@ export function OnboardingFlow({
     setDetails(initialDetails(provider));
     setCredentialTest(null);
   }, [provider]);
+
+  useEffect(() => {
+    if (step !== 8 || !codexLoginRunning) return;
+    let cancelled = false;
+
+    async function pollCodexLogin() {
+      try {
+        const response = await fetch("/api/codex/login");
+        const data = await response.json();
+        if (cancelled) return;
+        setCodexOutput(data.output || "");
+        setCodexLoginRunning(Boolean(data.running));
+        if (data.authenticated) {
+          setCodexStatus("ready");
+          setCodexLoginRunning(false);
+        } else if (data.running) {
+          setCodexStatus("login");
+        }
+      } catch {
+        // Keep polling quiet; the explicit check button reports errors.
+      }
+    }
+
+    void pollCodexLogin();
+    const timer = window.setInterval(pollCodexLogin, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [codexLoginRunning, step]);
 
   function unlockStep(nextStep: number) {
     setError(null);
@@ -272,14 +303,53 @@ export function OnboardingFlow({
       if (!response.ok) throw new Error(data.error || "Could not check Codex login.");
       if (!data.authenticated) {
         setCodexStatus("missing");
-        throw new Error("Codex is not logged in on this host yet. Run `codex login`, then check again.");
+        throw new Error("Codex is not logged in yet. Start the Codex login session below, authorize with the shown device code, then check again.");
       }
       setCodexStatus("ready");
+      setCodexLoginRunning(false);
       return true;
     } catch (err) {
       setCodexStatus("missing");
       setError(err instanceof Error ? err.message : String(err));
       return false;
+    }
+  }
+
+  async function startCodexLogin() {
+    setError(null);
+    setCodexStatus("login");
+    setCodexLoginRunning(true);
+
+    try {
+      const response = await fetch("/api/codex/login", { method: "POST" });
+      const data = await response.json();
+      setCodexOutput(data.output || "");
+      setCodexLoginRunning(Boolean(data.running));
+      if (!response.ok) throw new Error(data.error || "Could not start Codex login.");
+      if (data.authenticated) {
+        setCodexStatus("ready");
+        setCodexLoginRunning(false);
+      } else {
+        setCodexStatus("login");
+      }
+    } catch (err) {
+      setCodexStatus("missing");
+      setCodexLoginRunning(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function stopCodexLogin() {
+    setError(null);
+    try {
+      const response = await fetch("/api/codex/login", { method: "DELETE" });
+      const data = await response.json();
+      setCodexOutput(data.output || "");
+      setCodexLoginRunning(false);
+      if (!response.ok) throw new Error(data.error || "Could not stop Codex login.");
+      setCodexStatus(data.authenticated ? "ready" : "idle");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -800,26 +870,46 @@ export function OnboardingFlow({
                 </label>
 
                 <p className="mt-4 text-sm leading-6 text-gray-600">
-                  Run the login command in the same environment where this Next.js server runs, then check the status here. Leave the model empty to use whatever Codex CLI is configured to use.
+                  Start the login session here. A2W opens <code className="rounded bg-gray-50 px-1.5 py-1">codex login</code> in tmux and shows the device-code instructions from the same runtime that will run chat.
                 </p>
 
+                <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={startCodexLogin}
+                    disabled={codexStatus === "checking" || codexStatus === "login"}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-black px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
+                  >
+                    <Icon name={codexStatus === "login" ? "fa-circle-notch fa-spin" : "fa-right-to-bracket"} />
+                    {codexStatus === "login" ? "Waiting for login" : "Start login"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={checkCodex}
+                    disabled={codexStatus === "checking"}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100"
+                  >
+                    <Icon name={codexStatus === "checking" ? "fa-circle-notch fa-spin" : "fa-rotate"} />
+                    Check status
+                  </button>
+                  <button
+                    type="button"
+                    onClick={stopCodexLogin}
+                    disabled={!codexLoginRunning}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                  >
+                    <Icon name="fa-stop" />
+                    Stop tmux
+                  </button>
+                </div>
+
                 {codexOutput ? (
-                  <pre className="thin-scrollbar mt-4 max-h-20 overflow-auto whitespace-pre-wrap rounded-[1.25rem] bg-black p-3 text-xs leading-5 text-gray-100">
+                  <pre className="thin-scrollbar mt-4 max-h-44 overflow-auto whitespace-pre-wrap rounded-[1.25rem] bg-black p-3 text-xs leading-5 text-gray-100">
                     {codexOutput}
                   </pre>
                 ) : null}
 
                 {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
-
-                <button
-                  type="button"
-                  onClick={checkCodex}
-                  disabled={codexStatus === "checking"}
-                  className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100"
-                >
-                  <Icon name={codexStatus === "checking" ? "fa-circle-notch fa-spin" : "fa-rotate"} />
-                  Check Codex login
-                </button>
               </div>
             </div>
             <div className="mt-auto flex flex-col-reverse gap-3 pt-4 sm:flex-row sm:justify-between">
@@ -833,7 +923,7 @@ export function OnboardingFlow({
               <button
                 type="button"
                 onClick={continueFromCodex}
-                disabled={codexStatus === "checking"}
+                disabled={codexStatus === "checking" || codexStatus === "login"}
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-6 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 <Icon name={codexStatus === "checking" ? "fa-circle-notch fa-spin" : "fa-arrow-right"} />
@@ -1772,8 +1862,14 @@ function CommandLine({ command }: { command: string }) {
 }
 
 function StatusPill({ status }: { status: CodexStatus }) {
-  const text = status === "ready" ? "logged in" : status === "checking" ? "checking" : status === "missing" ? "not ready" : "not checked";
-  const tone = status === "ready" ? "bg-emerald-50 text-emerald-700" : status === "missing" ? "bg-red-50 text-red-700" : "bg-gray-100 text-gray-600";
+  const text = status === "ready" ? "logged in" : status === "login" ? "login open" : status === "checking" ? "checking" : status === "missing" ? "not ready" : "not checked";
+  const tone = status === "ready"
+    ? "bg-emerald-50 text-emerald-700"
+    : status === "login"
+      ? "bg-blue-50 text-blue-700"
+      : status === "missing"
+        ? "bg-red-50 text-red-700"
+        : "bg-gray-100 text-gray-600";
   return <span className={`rounded-full px-3 py-1 text-xs font-semibold ${tone}`}>{text}</span>;
 }
 

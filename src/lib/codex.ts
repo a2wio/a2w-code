@@ -29,7 +29,7 @@ export async function getCodexLoginStatus() {
     };
   } catch (error) {
     return {
-      available: false,
+      available: !(error instanceof Error && /Could not start codex/i.test(error.message)),
       authenticated: false,
       output: error instanceof Error ? error.message : String(error)
     };

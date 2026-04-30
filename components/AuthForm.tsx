@@ -4,7 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "./Icon";
 
-export function AuthForm() {
+export function AuthForm({ defaultUsername = "admin" }: { defaultUsername?: string }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,7 +47,7 @@ export function AuthForm() {
       </div>
 
       <form className="grid gap-5" onSubmit={submit}>
-        <Field name="username" label="Username" defaultValue="admin" autoComplete="username" />
+        <Field name="username" label="Username" defaultValue={defaultUsername} autoComplete="username" />
         <Field
           name="password"
           label="Password"

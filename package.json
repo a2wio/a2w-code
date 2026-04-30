@@ -1,6 +1,6 @@
 {
   "name": "a2w-infra-agent-mvp",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Self-hosted infrastructure agent console for DevOps and platform engineers.",
@@ -8,7 +8,11 @@
     "dev": "next dev -H 127.0.0.1 -p 5173",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 5173",
-    "test": "node --test"
+    "test": "node --test",
+    "release:check": "sh scripts/release-check.sh",
+    "release:archive": "sh scripts/package-release.sh",
+    "sandbox:build": "podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox",
+    "container:build": "podman build -t a2w-codex-terraform:0.0.1 -f Dockerfile ."
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.0",

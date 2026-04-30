@@ -12,7 +12,7 @@ The current MVP is intentionally single-instance and single-admin. There is no p
 - Instance username/password auth with signed HTTP-only cookies
 - Local JSON persistence in `.data/db.json`
 - Workspace repository files in `.data/workspaces/selfhost-workspace/repository`
-- Optional local Codex CLI backend through the host operator's `codex login`
+- Local Codex CLI backend through the operator's `codex login`
 - Podman sandbox execution for `terraform fmt`, `plan`, `apply`, and `destroy`
 
 ## Configure
@@ -29,7 +29,7 @@ Important variables:
 - `A2W_WORKSPACE_NAME` is used for the local workspace and generated "hello" function.
 - `AUTH_SECRET` signs browser sessions.
 - `A2W_ENCRYPTION_KEY` encrypts provider secrets at rest.
-- `A2W_AGENT_BACKEND=codex` forces the host Codex CLI for chat-driven workspace edits. Onboarding can also enable Codex per workspace after `codex login`.
+- `A2W_AGENT_BACKEND=codex` enables the Codex CLI for chat-driven workspace edits. The release image includes the Codex CLI; host-first installs need `codex` on `PATH`.
 - `A2W_CODEX_MODEL` sets an instance default model for `codex exec`. Settings or `/model <model-id>` can override it per workspace.
 - `A2W_ENABLE_TERRAFORM_APPLY=true` allows apply/destroy routes to run after explicit UI approval.
 
@@ -42,7 +42,7 @@ codex login
 A2W_AGENT_BACKEND=codex npm run dev
 ```
 
-You can also leave `A2W_AGENT_BACKEND=mock`, run `codex login`, and verify Codex during onboarding. Codex runs against `.data/workspaces/selfhost-workspace/repository` with workspace-write sandboxing. Terraform apply/destroy remains a separate A2W sandbox action.
+During onboarding, A2W can start `codex login` inside tmux and show the device-code instructions in the browser. Authorize Codex with your ChatGPT/OpenAI account, then verify the login before continuing. Codex runs against `.data/workspaces/selfhost-workspace/repository` with workspace-write sandboxing. Terraform apply/destroy remains a separate A2W sandbox action.
 
 Each A2W chat stores its own Codex thread id after the first Codex run, then uses `codex exec resume` for follow-up prompts. Inside chat, use `/model` to see the current model and suggested IDs, `/model gpt-5.3-codex-spark` for faster runs, or `/model default` to return to the Codex CLI default.
 
@@ -99,7 +99,7 @@ The sandbox discovers Terraform call directories below `infrastructure/terraform
 1. Start the app and open `/auth`.
 2. Sign in with the configured instance admin credentials.
 3. Complete onboarding: choose AWS or Azure, follow the provider trust instructions, and enter credentials.
-4. Run `codex login` on the host and verify Codex in the onboarding step.
+4. Start the Codex login session in onboarding, authorize the device code, and verify Codex.
 5. Land in `/dashboard/agent`.
 6. Open the generated files modal or `/dashboard/files`.
 7. Run `terraform fmt`, then `terraform plan`.
@@ -111,6 +111,36 @@ The sandbox discovers Terraform call directories below `infrastructure/terraform
 ```sh
 npm test
 npm run build
+```
+
+## Release Packaging
+
+Release artifacts for v0.0.1 are included:
+
+- `Dockerfile` builds the self-hosted web app image with Codex, Git, tmux, and Podman tooling included.
+- `Containerfile` mirrors the app image for Podman users who prefer that filename.
+- `compose.yaml` runs the app container with `.data`, Codex auth, and the host Podman socket mounted.
+- `sandbox/Containerfile` builds the isolated Terraform runner image.
+- `scripts/release-check.sh` runs tests, production build, and sandbox image build when Podman is available.
+- `scripts/package-release.sh` creates a distributable source archive in `dist/`.
+- `docs/release.md` documents host-first and containerized deployment.
+
+Run the release check:
+
+```sh
+npm run release:check
+```
+
+For CI without Podman image builds:
+
+```sh
+A2W_RELEASE_SKIP_SANDBOX=1 npm run release:check
+```
+
+Create the release archive:
+
+```sh
+npm run release:archive
 ```
 
 ## Safety Notes

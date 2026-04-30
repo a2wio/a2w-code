@@ -66,6 +66,10 @@ function configuredAdmin() {
   };
 }
 
+export function configuredAdminUsername() {
+  return process.env.A2W_ADMIN_USERNAME || "admin";
+}
+
 async function ensureSelfHostedAccount(admin: ReturnType<typeof configuredAdmin>) {
   return updateData((data) => {
     const createdAt = new Date().toISOString();

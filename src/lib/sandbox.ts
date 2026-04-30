@@ -48,8 +48,8 @@ export async function runSandbox(input: {
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   const image = process.env.A2W_SANDBOX_IMAGE || "a2w-infra-sandbox:latest";
-  const repoRoot = workspaceRepoRoot(input.workspaceId);
-  const sandboxScripts = join(PROJECT_ROOT, "sandbox", "scripts");
+  const repoRoot = sandboxHostPath(workspaceRepoRoot(input.workspaceId));
+  const sandboxScripts = sandboxHostPath(join(PROJECT_ROOT, "sandbox", "scripts"));
   const script = sandboxScript(input.mode);
   const network = input.allowNetwork ? "slirp4netns" : "none";
   const credentialEnv = await sandboxCredentialEnv(input.workspaceId, input.planId);
@@ -180,6 +180,15 @@ function sandboxScript(mode: "terraform-fmt" | "validate" | "terraform-plan" | "
   if (mode === "terraform-apply") return "/sandbox/terraform-apply.sh";
   if (mode === "terraform-destroy") return "/sandbox/terraform-destroy.sh";
   return "/sandbox/terraform-plan.sh";
+}
+
+function sandboxHostPath(path: string) {
+  const containerRoot = process.env.A2W_CONTAINER_PROJECT_ROOT;
+  const hostRoot = process.env.A2W_HOST_PROJECT_ROOT;
+  if (!containerRoot || !hostRoot) return path;
+  if (path === containerRoot) return hostRoot;
+  if (path.startsWith(`${containerRoot}/`)) return `${hostRoot}${path.slice(containerRoot.length)}`;
+  return path;
 }
 
 function sandboxTimeoutMs(mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy") {

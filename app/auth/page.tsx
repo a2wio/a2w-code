@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { AuthForm } from "@/components/AuthForm";
-import { getCurrentContext } from "@/src/lib/auth";
+import { configuredAdminUsername, getCurrentContext } from "@/src/lib/auth";
 
 export default async function AuthPage() {
   const context = await getCurrentContext();
@@ -40,7 +40,7 @@ export default async function AuthPage() {
         <AuthLogoStrip />
       </section>
       <section className="flex min-h-[calc(100dvh-32px)] items-center justify-center px-2 py-8 sm:px-6 lg:min-h-[calc(100dvh-32px)]">
-        <AuthForm />
+        <AuthForm defaultUsername={configuredAdminUsername()} />
       </section>
     </main>
   );
