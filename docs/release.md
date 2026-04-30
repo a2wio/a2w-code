@@ -1,6 +1,6 @@
 # Release Guide
 
-This release is packaged for self-hosted operation. The image includes the Codex CLI, Git, tmux, and Podman tooling. The host-first path still requires those tools on the host.
+This release is packaged for self-hosted operation. The image includes the Codex CLI, Git, tmux, and Podman tooling. The host-first path still requires those tools on the host. Kubernetes deployments can run Terraform through short-lived in-cluster Jobs instead of a host Podman socket.
 
 ## Runtime Requirements
 
@@ -8,7 +8,7 @@ This release is packaged for self-hosted operation. The image includes the Codex
 - npm
 - Git
 - tmux
-- Podman with a working Linux machine/socket
+- Podman with a working Linux machine/socket for host-first sandbox runs
 - Codex CLI for host-first deployment. The container image already includes it.
 - A private network or reverse proxy with authentication/TLS if exposed beyond localhost
 
@@ -71,6 +71,21 @@ In the container path, mount persistent Codex auth at `/home/node/.codex`. The i
 
 Those are required so sandbox volume paths generated inside the app container are translated back to the host checkout path before `podman run` starts the Terraform sandbox.
 
+## Kubernetes Sandbox Backend
+
+When deployed inside Kubernetes, set `A2W_SANDBOX_BACKEND=kubernetes`. The app service account must be able to create/delete Jobs, ConfigMaps, Secrets, and NetworkPolicies in its namespace, and read Pods plus Pod logs.
+
+The Kubernetes backend uses the same `A2W_SANDBOX_IMAGE` Terraform runner image, mounts the app data PVC into each Job with `subPath=workspaces/<workspace-id>/repository`, injects cloud credentials through a temporary Secret, captures logs, then deletes the temporary resources.
+
+Minimum runtime variables:
+
+```sh
+A2W_SANDBOX_BACKEND=kubernetes
+A2W_SANDBOX_IMAGE=registry.example.com/a2w/infra-sandbox:v0.0.1
+A2W_K8S_NAMESPACE=a2w-codex-terraform
+A2W_K8S_DATA_PVC=a2w-codex-terraform-data
+```
+
 ## Release Check
 
 ```sh
@@ -84,6 +99,26 @@ To skip the sandbox image build in CI:
 ```sh
 A2W_RELEASE_SKIP_SANDBOX=1 npm run release:check
 ```
+
+## GitHub Actions Image Build
+
+The repository includes `.github/workflows/container-images.yml` to build and push both release images on GitHub-hosted `linux/amd64` runners.
+
+Configure these repository secrets:
+
+- `A2W_REGISTRY_USERNAME`
+- `A2W_REGISTRY_PASSWORD`
+
+The workflow pushes:
+
+- `registry.k6nis.dev/a2w/codex-terraform:v<package.json version>`
+- `registry.k6nis.dev/a2w/codex-terraform:latest`
+- `registry.k6nis.dev/a2w/codex-terraform:sha-<short-sha>`
+- `registry.k6nis.dev/a2w/infra-sandbox:v<package.json version>`
+- `registry.k6nis.dev/a2w/infra-sandbox:latest`
+- `registry.k6nis.dev/a2w/infra-sandbox:sha-<short-sha>`
+
+Run it from GitHub Actions with **Container Images > Run workflow**, or push to `main` / a `v*` tag.
 
 ## Release Archive
 

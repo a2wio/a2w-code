@@ -3991,9 +3991,9 @@ function modeLabel(mode: SandboxMode, progressive = false) {
 function modeDescription(mode: SandboxMode) {
   if (mode === "terraform-fmt") return "Format generated Terraform files inside the sandbox-mounted workspace.";
   if (mode === "terraform-plan") return "Run provider-backed Terraform plan. This requires network and credentials.";
-  if (mode === "terraform-apply") return "Run Terraform apply inside local Podman. This can create cloud resources.";
-  if (mode === "terraform-destroy") return "Run Terraform destroy inside local Podman. This removes resources tracked in the local Terraform state.";
-  return "Run offline checks and optional provider validation inside local Podman.";
+  if (mode === "terraform-apply") return "Run Terraform apply inside the configured sandbox backend. This can create cloud resources.";
+  if (mode === "terraform-destroy") return "Run Terraform destroy inside the configured sandbox backend. This removes resources tracked in the local Terraform state.";
+  return "Run offline checks and optional provider validation inside the configured sandbox backend.";
 }
 
 function MiniStat({ label, value }: { label: string; value: string }) {

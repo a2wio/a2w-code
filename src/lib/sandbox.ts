@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { PROJECT_ROOT, readData, updateData, workspaceRepoRoot } from "./data";
 import { decryptSecret } from "./secrets";
+import { formatKubernetesSandboxFailure, kubernetesSandboxJobName, runKubernetesSandbox } from "./sandbox-kubernetes";
 import { parseTerraformPlanOutput, stripTerraformPlanJson } from "./terraform-plan-parser";
 import { terraformVariableEnv } from "./terraform-variables";
 import type { SandboxRun } from "./types";
@@ -15,6 +16,9 @@ type CommandError = NodeJS.ErrnoException & {
   stderr?: string;
   code?: number;
 };
+
+type SandboxMode = "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+type SandboxBackend = "podman" | "kubernetes";
 
 const FORWARDED_CLOUD_ENV = [
   "AWS_ACCESS_KEY_ID",
@@ -38,7 +42,7 @@ export async function runSandbox(input: {
   workspaceId: string;
   planId?: string;
   rootPath?: string;
-  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+  mode: SandboxMode;
   allowNetwork?: boolean;
 }) {
   if (isCloudMutationMode(input.mode) && process.env.A2W_ENABLE_TERRAFORM_APPLY !== "true") {
@@ -47,6 +51,7 @@ export async function runSandbox(input: {
 
   const id = randomUUID();
   const createdAt = new Date().toISOString();
+  const backend = sandboxBackend();
   const image = process.env.A2W_SANDBOX_IMAGE || "a2w-infra-sandbox:latest";
   const repoRoot = sandboxHostPath(workspaceRepoRoot(input.workspaceId));
   const sandboxScripts = sandboxHostPath(join(PROJECT_ROOT, "sandbox", "scripts"));
@@ -55,14 +60,20 @@ export async function runSandbox(input: {
   const credentialEnv = await sandboxCredentialEnv(input.workspaceId, input.planId);
   const targetDirEnv = await sandboxTerraformTargetDirEnv(input.workspaceId, input.planId, input.mode, input.rootPath);
   const variableEnv = await sandboxTerraformVariableEnv(input.workspaceId, input.rootPath);
+  const sandboxEnv = {
+    A2W_SANDBOX_NETWORK: input.allowNetwork ? "1" : "0",
+    ...credentialEnv,
+    ...targetDirEnv,
+    ...variableEnv
+  };
   const forwardedEnvNames = forwardedCloudEnvNames({ ...credentialEnv, ...targetDirEnv, ...variableEnv });
-  const childEnv = { ...process.env, ...credentialEnv, ...targetDirEnv, ...variableEnv };
+  const childEnv = { ...process.env, ...sandboxEnv };
   const command = [
     "run",
     "--rm",
     `--network=${network}`,
     "-e",
-    `A2W_SANDBOX_NETWORK=${input.allowNetwork ? "1" : "0"}`,
+    `A2W_SANDBOX_NETWORK=${sandboxEnv.A2W_SANDBOX_NETWORK}`,
     ...envNameArgs(forwardedEnvNames),
     "-v",
     `${repoRoot}:/workspace:Z`,
@@ -74,6 +85,9 @@ export async function runSandbox(input: {
     "/bin/sh",
     script
   ];
+  const recordedCommand = backend === "kubernetes"
+    ? ["kubernetes-job", kubernetesSandboxJobName(id), image, "/bin/sh", script]
+    : ["podman", ...command];
 
   await updateData((data) => {
     const locks = data.rootLocks || [];
@@ -100,7 +114,7 @@ export async function runSandbox(input: {
       rootPath: input.rootPath,
       mode: input.mode,
       status: "running",
-      command: ["podman", ...command],
+      command: recordedCommand,
       exitCode: null,
       output: "",
       createdAt,
@@ -120,22 +134,38 @@ export async function runSandbox(input: {
   let status: SandboxRun["status"] = "succeeded";
 
   try {
-    await execFileAsync("podman", ["info"], {
-      timeout: 15_000,
-      maxBuffer: 1024 * 1024
-    });
+    if (backend === "kubernetes") {
+      const result = await runKubernetesSandbox({
+        runId: id,
+        workspaceId: input.workspaceId,
+        mode: input.mode,
+        image,
+        script,
+        env: sandboxEnv,
+        allowNetwork: input.allowNetwork,
+        timeoutMs: sandboxTimeoutMs(input.mode)
+      });
+      output = result.output;
+      exitCode = result.exitCode;
+      if (exitCode !== 0) status = "failed";
+    } else {
+      await execFileAsync("podman", ["info"], {
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024
+      });
 
-    const result = await execFileAsync("podman", command, {
-      env: childEnv,
-      timeout: sandboxTimeoutMs(input.mode),
-      maxBuffer: 1024 * 1024 * 4
-    });
-    output = `${result.stdout || ""}${result.stderr || ""}`;
+      const result = await execFileAsync("podman", command, {
+        env: childEnv,
+        timeout: sandboxTimeoutMs(input.mode),
+        maxBuffer: 1024 * 1024 * 4
+      });
+      output = `${result.stdout || ""}${result.stderr || ""}`;
+    }
   } catch (error) {
     const err = error as CommandError;
     status = "failed";
     exitCode = typeof err.code === "number" ? err.code : null;
-    output = formatSandboxFailure(err, image);
+    output = backend === "kubernetes" ? formatKubernetesSandboxFailure(error) : formatSandboxFailure(err, image);
   }
 
   const planSummary = input.mode === "terraform-plan" ? parseTerraformPlanOutput(output) : undefined;
@@ -148,7 +178,7 @@ export async function runSandbox(input: {
     rootPath: input.rootPath,
     mode: input.mode,
     status,
-    command: ["podman", ...command],
+    command: recordedCommand,
     exitCode,
     output: cleanOutput,
     planSummary,
@@ -174,7 +204,7 @@ export async function runSandbox(input: {
   return run;
 }
 
-function sandboxScript(mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy") {
+function sandboxScript(mode: SandboxMode) {
   if (mode === "terraform-fmt") return "/sandbox/terraform-fmt.sh";
   if (mode === "validate") return "/sandbox/validate.sh";
   if (mode === "terraform-apply") return "/sandbox/terraform-apply.sh";
@@ -191,14 +221,21 @@ function sandboxHostPath(path: string) {
   return path;
 }
 
-function sandboxTimeoutMs(mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy") {
+function sandboxTimeoutMs(mode: SandboxMode) {
   if (isCloudMutationMode(mode)) return 10 * 60_000;
   if (mode === "terraform-plan") return 4 * 60_000;
   return 2 * 60_000;
 }
 
-function isCloudMutationMode(mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy") {
+function isCloudMutationMode(mode: SandboxMode) {
   return mode === "terraform-apply" || mode === "terraform-destroy";
+}
+
+function sandboxBackend(): SandboxBackend {
+  const value = (process.env.A2W_SANDBOX_BACKEND || "podman").trim().toLowerCase();
+  if (value === "kubernetes" || value === "k8s") return "kubernetes";
+  if (value === "auto") return process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "podman";
+  return "podman";
 }
 
 function forwardedCloudEnvNames(credentialEnv: Record<string, string>) {
@@ -243,7 +280,7 @@ async function sandboxCredentialEnv(workspaceId: string, planId?: string): Promi
 async function sandboxTerraformTargetDirEnv(
   workspaceId: string,
   planId: string | undefined,
-  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy",
+  mode: SandboxMode,
   rootPath?: string
 ): Promise<Record<string, string>> {
   if (rootPath && mode !== "terraform-fmt") return { A2W_TERRAFORM_DIRS: rootPath };

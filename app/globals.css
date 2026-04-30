@@ -74,6 +74,12 @@ textarea {
   animation: softPulse 3.2s ease-in-out infinite;
 }
 
+.a2w-loader-mark {
+  animation: a2wLoader 1.35s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+
 .thin-scrollbar::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -142,6 +148,25 @@ textarea {
     opacity: 0.64;
   }
   50% {
+    opacity: 1;
+  }
+}
+
+@keyframes a2wLoader {
+  0%,
+  100% {
+    opacity: 0.52;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a2w-loader-mark {
+    animation: none;
     opacity: 1;
   }
 }

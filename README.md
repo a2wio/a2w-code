@@ -1,6 +1,6 @@
 # A2W Infra Agent Console
 
-A2W is a self-hostable Next.js console for DevOps and platform engineers. It gives a local operator a ChatGPT-style infrastructure agent, onboarding for AWS/Azure trust setup, a native project file browser, and Podman-isolated Terraform workflows.
+A2W is a self-hostable Next.js console for DevOps and platform engineers. It gives a local operator a ChatGPT-style infrastructure agent, onboarding for AWS/Azure trust setup, a native project file browser, and sandboxed Terraform workflows.
 
 The current MVP is intentionally single-instance and single-admin. There is no public registration flow, no SaaS tenant model, and no hosted credential custody. Cloud credentials are stored in local `.data/db.json`, encrypted with the instance secret, and injected only into sandbox runs.
 
@@ -13,7 +13,7 @@ The current MVP is intentionally single-instance and single-admin. There is no p
 - Local JSON persistence in `.data/db.json`
 - Workspace repository files in `.data/workspaces/selfhost-workspace/repository`
 - Local Codex CLI backend through the operator's `codex login`
-- Podman sandbox execution for `terraform fmt`, `plan`, `apply`, and `destroy`
+- Podman or Kubernetes Job sandbox execution for `terraform fmt`, `plan`, `apply`, and `destroy`
 
 ## Configure
 
@@ -32,6 +32,8 @@ Important variables:
 - `A2W_AGENT_BACKEND=codex` enables the Codex CLI for chat-driven workspace edits. The release image includes the Codex CLI; host-first installs need `codex` on `PATH`.
 - `A2W_CODEX_MODEL` sets an instance default model for `codex exec`. Settings or `/model <model-id>` can override it per workspace.
 - `A2W_ENABLE_TERRAFORM_APPLY=true` allows apply/destroy routes to run after explicit UI approval.
+- `A2W_SANDBOX_BACKEND=podman` runs Terraform through local Podman. Use `kubernetes` when the app runs in-cluster.
+- `A2W_SANDBOX_IMAGE` is the Terraform runner image for either backend.
 
 In local development only, the app accepts `admin` / `password123` when no admin env vars are set. Production requires `A2W_ADMIN_PASSWORD`.
 
@@ -82,13 +84,24 @@ The bundled scripts bind to `127.0.0.1:5173` by default. Put a private reverse p
 
 Older dashboard routes redirect into the reduced chat/files/settings surface.
 
-## Sandbox Image
+## Sandbox Backends
 
-The app expects a local Podman image named `a2w-infra-sandbox:latest`.
+For local development, the app expects a local Podman image named `a2w-infra-sandbox:latest`.
 
 ```sh
 podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox
 ```
+
+For Kubernetes deployment, set:
+
+```sh
+A2W_SANDBOX_BACKEND=kubernetes
+A2W_SANDBOX_IMAGE=registry.k6nis.dev/a2w/infra-sandbox:v0.0.1
+A2W_K8S_NAMESPACE=a2w-codex-terraform
+A2W_K8S_DATA_PVC=a2w-codex-terraform-data
+```
+
+In Kubernetes mode, each sandbox run creates a short-lived Job in the app namespace, mounts the shared `.data` PVC to the selected workspace repository, injects credentials through a short-lived Secret, captures pod logs, and cleans up the Job/Secret/ConfigMap after completion. Offline runs also create a temporary deny-egress NetworkPolicy when the cluster CNI supports NetworkPolicy.
 
 Validation and `terraform fmt` can run without cloud credentials. Terraform `plan`, `apply`, and `destroy` need network-enabled sandbox runs and valid provider credentials from onboarding/settings.
 
