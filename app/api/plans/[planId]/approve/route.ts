@@ -5,11 +5,16 @@ import { errorJson, json } from "@/src/lib/http";
 
 export const runtime = "nodejs";
 
-export async function POST(_: Request, { params }: { params: Promise<{ planId: string }> }) {
+export async function POST(request: Request, { params }: { params: Promise<{ planId: string }> }) {
   try {
     const context = await getCurrentContext();
     if (!context) return errorJson("Unauthorized", 401);
     const { planId } = await params;
+    const body = await request.json().catch(() => ({}));
+    const requestedChatId = String(body.chatId || "").trim();
+    if (requestedChatId && !context.data.chats.some((item) => item.id === requestedChatId && item.workspaceId === context.workspace.id)) {
+      return errorJson("Chat not found.", 404);
+    }
 
     const result = await updateData((data) => {
       const plan = data.plans.find((item) => item.id === planId && item.workspaceId === context.workspace.id);
@@ -30,7 +35,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ planId: s
       data.messages.push({
         id: randomUUID(),
         workspaceId: context.workspace.id,
-        chatId: plan.chatId,
+        chatId: requestedChatId || plan.chatId,
         role: "assistant",
         content: [
           `Approval recorded for ${plan.title}.`,

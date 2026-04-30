@@ -45,13 +45,17 @@ export function SettingsPanel({
   workspace,
   connections,
   applyRuntimeEnabled,
-  agentBackend
+  agentBackend,
+  mode = "all",
+  embedded = false
 }: {
   user: PublicUser;
   workspace: Workspace;
   connections: ProviderConnection[];
   applyRuntimeEnabled: boolean;
   agentBackend: "mock" | "codex";
+  mode?: "all" | "credentials" | "settings";
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const initialProvider: SupportedProvider = workspace.cloudPreference === "azure" ? "azure" : "aws";
@@ -68,6 +72,8 @@ export function SettingsPanel({
   const [toast, setToast] = useState<string | null>(null);
   const active = providerMeta[provider];
   const connection = useMemo(() => connections.find((item) => item.provider === provider), [connections, provider]);
+  const showCredentials = mode !== "settings";
+  const showSettings = mode !== "credentials";
 
   async function saveCredentials(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -180,7 +186,8 @@ export function SettingsPanel({
 
   return (
     <>
-      <section className="motion-enter mx-auto grid max-w-6xl gap-5">
+      <section className={`motion-enter mx-auto grid gap-5 ${embedded ? "max-w-none" : "max-w-6xl"}`}>
+        {!embedded ? (
         <div className="rounded-[2rem] border border-gray-200 bg-white p-6 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Settings</p>
           <div className="mt-3 flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
@@ -195,8 +202,10 @@ export function SettingsPanel({
             </div>
           </div>
         </div>
+        ) : null}
 
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className={`grid gap-5 ${showCredentials && showSettings ? "lg:grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
+          {showCredentials ? (
           <form key={provider} onSubmit={saveCredentials} className="rounded-[2rem] border border-gray-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
               <div>
@@ -276,7 +285,9 @@ export function SettingsPanel({
               </button>
             </div>
           </form>
+          ) : null}
 
+          {showSettings ? (
           <aside className="grid gap-5">
             <div className="rounded-[2rem] border border-gray-200 bg-white p-6 shadow-sm">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Apply control</p>
@@ -359,6 +370,7 @@ export function SettingsPanel({
               </button>
             </div>
           </aside>
+          ) : null}
         </div>
       </section>
 

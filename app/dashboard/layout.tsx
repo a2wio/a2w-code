@@ -5,7 +5,16 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const data = await requireDashboardData();
 
   return (
-    <DashboardShell workspace={data.workspace} chats={data.chats} messages={data.messages} plans={data.plans}>
+    <DashboardShell
+      user={data.user}
+      workspace={data.workspace}
+      connections={data.providerConnections}
+      applyRuntimeEnabled={process.env.A2W_ENABLE_TERRAFORM_APPLY === "true"}
+      agentBackend={data.workspace.codexEnabled || process.env.A2W_AGENT_BACKEND === "codex" ? "codex" : "mock"}
+      chats={data.chats}
+      messages={data.messages}
+      plans={data.plans}
+    >
       {children}
     </DashboardShell>
   );

@@ -18,6 +18,10 @@ export async function POST(request: NextRequest) {
     const mode = parseMode(body.mode);
     const planId = String(body.planId || "");
     const rootPath = body.rootPath ? validateTerraformRootPath(String(body.rootPath)) : undefined;
+    const chatId = String(body.chatId || "").trim();
+    if (chatId && !context.data.chats.some((item) => item.id === chatId && item.workspaceId === context.workspace.id)) {
+      return errorJson("Chat not found.", 404);
+    }
 
     if (mode === "terraform-apply" || mode === "terraform-destroy") {
       const plan = context.data.plans.find((item) => item.id === planId && item.workspaceId === context.workspace.id);
@@ -28,6 +32,7 @@ export async function POST(request: NextRequest) {
         await appendSandboxMessage({
           workspaceId: context.workspace.id,
           planId,
+          chatId,
           rootPath,
           mode,
           status: "failed",
@@ -39,6 +44,7 @@ export async function POST(request: NextRequest) {
         await appendSandboxMessage({
           workspaceId: context.workspace.id,
           planId,
+          chatId,
           rootPath,
           mode,
           status: "failed",
@@ -60,6 +66,7 @@ export async function POST(request: NextRequest) {
     await appendSandboxMessage({
       workspaceId: context.workspace.id,
       planId,
+      chatId,
       rootPath,
       mode,
       status: run.status,
@@ -81,6 +88,7 @@ function parseMode(mode: unknown): "terraform-fmt" | "validate" | "terraform-pla
 async function appendSandboxMessage(input: {
   workspaceId: string;
   planId: string;
+  chatId?: string;
   rootPath?: string;
   mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -101,10 +109,13 @@ async function appendSandboxMessage(input: {
 
   await updateData((data) => {
     const plan = data.plans.find((item) => item.id === input.planId && item.workspaceId === input.workspaceId);
+    const chatId = input.chatId && data.chats.some((item) => item.id === input.chatId && item.workspaceId === input.workspaceId)
+      ? input.chatId
+      : plan?.chatId;
     data.messages.push({
       id: randomUUID(),
       workspaceId: input.workspaceId,
-      chatId: plan?.chatId,
+      chatId,
       role: "assistant",
       planId: input.planId,
       actions: sandboxMessageActions(input),

@@ -162,9 +162,11 @@ type CodexTmuxPane = {
   target: string;
   running: boolean;
   ready: boolean;
+  stagedInput?: string;
   output: string;
 };
 type CodexControlKey = "up" | "down" | "enter" | "escape";
+const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
 
 export function AgentChat({
   chats,
@@ -236,6 +238,7 @@ export function AgentChat({
   const codexPickerKeyRequest = useRef(0);
   const editorMode = activeChatId !== "new";
   const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready);
+  const codexStagedInput = codexBusy ? codexPane?.stagedInput : "";
   const slashQuery = slashCommandQuery(value);
   const slashMatches = useMemo(() => {
     if (slashQuery === null) return [];
@@ -362,6 +365,11 @@ export function AgentChat({
   }, [activeChatId, codexBusy, codexPicker, editorMode]);
 
   useEffect(() => {
+    if (!pendingStatus || (!pendingStatus.startsWith("Opening Codex") && !pendingStatus.startsWith("Running /"))) return;
+    if (codexPicker || codexPane?.ready) setPendingStatus(null);
+  }, [codexPane?.ready, codexPicker, pendingStatus]);
+
+  useEffect(() => {
     setRoots(terraformRoots);
     setGit(gitStatus);
     const nextRoot = selectedTerraformRoot || selectedRootPath || terraformRoots.at(-1)?.path || "";
@@ -440,6 +448,7 @@ export function AgentChat({
       return;
     }
     if (codexBusy) return;
+    setPendingStatus(command.command === "/model" ? "Opening Codex model picker..." : `Running ${command.command} in Codex...`);
     setLoading(true);
     try {
       const response = await fetch("/api/chat", {
@@ -455,6 +464,7 @@ export function AgentChat({
       if (data.chat?.id) router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
+      setPendingStatus(null);
     } finally {
       setLoading(false);
     }
@@ -542,11 +552,14 @@ export function AgentChat({
     setPendingStatus(`Recording approval for ${plan.title}...`);
     setLoading(true);
     try {
-      const response = await fetch(`/api/plans/${plan.id}/approve`, { method: "POST" });
+      const response = await fetch(`/api/plans/${plan.id}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chatId: activeChatId === "new" ? undefined : activeChatId })
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not approve plan.");
       setSelectedPlanId(plan.id);
-      if (plan.chatId) setActiveChatId(plan.chatId);
       flash("Plan approved");
       router.refresh();
     } catch (error) {
@@ -570,13 +583,19 @@ export function AgentChat({
       const response = await fetch("/api/sandbox/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ planId: plan.id, rootPath: selectedRoot?.path, mode: currentMode, allowNetwork: nextAllowNetwork, confirm: nextConfirm })
+        body: JSON.stringify({
+          planId: plan.id,
+          rootPath: selectedRoot?.path,
+          mode: currentMode,
+          allowNetwork: nextAllowNetwork,
+          confirm: nextConfirm,
+          chatId: activeChatId === "new" ? undefined : activeChatId
+        })
       });
       const data = await response.json();
       if (!response.ok && !data.run) throw new Error(data.error || "Sandbox run failed.");
       setApplyConfirm("");
       setSelectedPlanId(plan.id);
-      if (plan.chatId) setActiveChatId(plan.chatId);
       flash(data.run?.status === "succeeded" ? `${label} succeeded` : `${label} failed`);
       void refreshEditorFiles();
       void refreshGit();
@@ -773,9 +792,8 @@ export function AgentChat({
         {editorMode ? (
           <EditorFileRail
             files={editorFiles}
-            changedFiles={git.files.map((file) => file.path)}
+            git={git}
             loading={editorFilesLoading}
-            onRefresh={refreshEditorFiles}
             onOpenFile={openFilePanel}
           />
         ) : null}
@@ -891,7 +909,7 @@ export function AgentChat({
                     }
                   }}
                   className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-black outline-none"
-                  placeholder={codexBusy ? "Codex is working..." : "Message A2W..."}
+                  placeholder={codexStagedInput ? "Submitting queued Codex input..." : codexBusy ? "Codex is working..." : "Message A2W..."}
                 />
                 <button
                   disabled={loading || codexBusy || slashMode || !value.trim()}
@@ -1040,65 +1058,91 @@ function buildChatThreads(chats: Chat[], messages: Message[], plans: InfraPlan[]
 
 function EditorFileRail({
   files,
-  changedFiles,
+  git,
   loading,
-  onRefresh,
   onOpenFile
 }: {
   files: FileEntry[];
-  changedFiles: string[];
+  git: GitWorkspaceStatus;
   loading: boolean;
-  onRefresh: () => void;
   onOpenFile: (path: string) => void;
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => defaultEditorExpanded(files));
-  const tree = useMemo(() => buildEditorTree(files), [files]);
+  const [expanded, setExpanded] = useState<Set<string>>(() => initialEditorExpanded(files));
+  const [diffOnly, setDiffOnly] = useState(false);
+  const changedFiles = useMemo(() => git.files.map((file) => file.path), [git.files]);
   const changedSet = useMemo(() => new Set(changedFiles), [changedFiles]);
+  const diffFiles = useMemo(() => files.filter((file) => changedSet.has(file.path)), [changedSet, files]);
+  const visibleFiles = diffOnly ? diffFiles : files;
+  const tree = useMemo(() => buildEditorTree(visibleFiles), [visibleFiles]);
+  const diffStats = useMemo(() => summarizeDiffStats(git.files), [git.files]);
+  const repository = git.repositoryName || "repository";
+  const branch = git.initialized ? git.branch || "unknown" : "not initialized";
+  const repositoryBranch = `${repository}/${branch}`;
+  const clean = git.initialized && git.clean;
 
   useEffect(() => {
-    setExpanded(defaultEditorExpanded(files));
+    setExpanded((current) => mergeExpandedWithCurrentFiles(current, files));
   }, [files]);
+
+  useEffect(() => {
+    if (!diffOnly) return;
+    setExpanded((current) => new Set([...current, ...defaultEditorExpanded(diffFiles)]));
+  }, [diffFiles, diffOnly]);
 
   function toggle(path: string) {
     setExpanded((current) => {
       const next = new Set(current);
       if (next.has(path)) next.delete(path);
       else next.add(path);
+      persistEditorExpanded(next);
       return next;
     });
   }
 
   return (
     <aside className="hidden h-full w-[286px] shrink-0 flex-col border-r border-gray-200 bg-[#fbfbf9] lg:flex">
-      <div className="flex h-[65px] items-center justify-between border-b border-gray-200 px-3">
-        <Link href="/dashboard/agent" className="flex min-w-0 items-center gap-2 rounded-lg px-1 py-1 text-gray-700 transition hover:text-black">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-black text-[9px] font-semibold text-white">A2W</span>
-          <span className="min-w-0">
-            <span className="block truncate text-xs font-semibold text-gray-900">A2W-Codex-Terraform-v0.0.1</span>
-            <span className="block truncate text-[11px] text-gray-500">Codex workspace</span>
-          </span>
-        </Link>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
-          aria-label="Refresh file tree"
-          title="Refresh file tree"
-        >
-          <Icon name={loading ? "fa-circle-notch fa-spin" : "fa-rotate"} />
-        </button>
+      <div className="flex h-[65px] items-center justify-between gap-2 border-b border-gray-200 px-3">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Icon name="fa-brands fa-git-alt" className="shrink-0 text-[15px] text-[#F05032]" />
+            <span className="truncate font-mono text-xs font-semibold text-gray-800" title={repositoryBranch}>{repositoryBranch}</span>
+          </div>
+          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-gray-500">
+            <span>{git.files.length ? `${git.files.length} changed` : clean ? "clean" : "not checked"}</span>
+            {git.files.length ? (
+              <>
+                <span className="text-emerald-600">+{diffStats.additions}</span>
+                <span className="text-red-600">-{diffStats.deletions}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setDiffOnly((current) => !current)}
+            disabled={!git.files.length}
+            className={`grid h-8 w-8 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:text-gray-300 ${
+              diffOnly ? "bg-gray-900 text-white" : "text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+            }`}
+            aria-label={diffOnly ? "Show all files" : "Show changed files only"}
+            title={diffOnly ? "Show all files" : "Show changed files only"}
+            aria-pressed={diffOnly}
+          >
+            <Icon name="fa-code-compare" />
+          </button>
+        </div>
       </div>
 
       <div className="sidebar-scrollbar min-h-0 flex-1 overflow-auto px-2 py-3">
-        {files.length ? (
+        {visibleFiles.length ? (
           <EditorTreeList nodes={[...tree.children.values()]} expanded={expanded} changedFiles={changedSet} onToggle={toggle} onOpenFile={onOpenFile} depth={0} />
         ) : (
           <div className="px-2 py-3 text-xs leading-6 text-gray-400">
-            {loading ? "Loading workspace files..." : "No files yet. Ask Codex to create or edit Terraform."}
+            {loading ? "Loading workspace files..." : diffOnly ? "No changed files." : "No files yet. Ask Codex to create or edit Terraform."}
           </div>
         )}
       </div>
-      <EditorBottomDock />
     </aside>
   );
 }
@@ -1180,28 +1224,18 @@ function directoryHasChanges(node: EditorTreeNode, changedFiles: Set<string>): b
   return false;
 }
 
-function EditorBottomDock() {
-  return (
-    <nav className="shrink-0 border-t border-gray-200 p-3" aria-label="Editor navigation">
-      <div className="flex items-center gap-1 rounded-full border border-gray-200 bg-white p-1">
-      <Link
-        href="/dashboard/agent"
-        className="grid h-9 w-9 place-items-center rounded-full text-gray-500 transition hover:bg-gray-100 hover:text-black"
-        aria-label="Back to chats"
-        title="Back to chats"
-      >
-        <Icon name="fa-arrow-left" />
-      </Link>
-      <Link
-        href="/dashboard/settings"
-        className="grid h-9 w-9 place-items-center rounded-full text-gray-500 transition hover:bg-gray-100 hover:text-black"
-        aria-label="Settings"
-        title="Settings"
-      >
-        <Icon name="fa-gear" />
-      </Link>
-      </div>
-    </nav>
+function summarizeDiffStats(files: GitWorkspaceStatus["files"]) {
+  return files.reduce(
+    (stats, file) => {
+      const lines = file.diff.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("+++") || line.startsWith("---")) continue;
+        if (line.startsWith("+")) stats.additions += 1;
+        if (line.startsWith("-")) stats.deletions += 1;
+      }
+      return stats;
+    },
+    { additions: 0, deletions: 0 }
   );
 }
 
@@ -1507,6 +1541,50 @@ function defaultEditorExpanded(files: FileEntry[]) {
     }
   }
   return next;
+}
+
+function initialEditorExpanded(files: FileEntry[]) {
+  const saved = readEditorExpanded();
+  return saved || defaultEditorExpanded(files);
+}
+
+function mergeExpandedWithCurrentFiles(current: Set<string>, files: FileEntry[]) {
+  const valid = new Set<string>();
+  for (const file of files) {
+    const parts = file.path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      valid.add(parts.slice(0, index).join("/"));
+    }
+  }
+
+  if (!valid.size) return current;
+  const next = new Set([...current].filter((path) => valid.has(path)));
+  for (const path of readEditorExpanded() || []) {
+    if (valid.has(path)) next.add(path);
+  }
+  return next.size ? next : defaultEditorExpanded(files);
+}
+
+function readEditorExpanded() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(EDITOR_TREE_EXPANDED_STORAGE_KEY);
+    if (!raw) return null;
+    const paths = JSON.parse(raw);
+    if (!Array.isArray(paths)) return null;
+    return new Set(paths.filter((path): path is string => typeof path === "string"));
+  } catch {
+    return null;
+  }
+}
+
+function persistEditorExpanded(paths: Set<string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(EDITOR_TREE_EXPANDED_STORAGE_KEY, JSON.stringify([...paths].sort()));
+  } catch {
+    // Ignore localStorage failures; the file tree should still work normally.
+  }
 }
 
 function TerraformActionBar({
@@ -1832,7 +1910,10 @@ function slashCommandQuery(input: string) {
 }
 
 function CodexTmuxHistory({ pane, fallbackMessages }: { pane: CodexTmuxPane | null; fallbackMessages: Message[] }) {
-  const turns = parseCodexPaneTurns(pane?.output || "");
+  const parsedTurns = parseCodexPaneTurns(pane?.output || "");
+  const turns = pane?.ready && parsedTurns.at(-1) && !parsedTurns.at(-1)?.response
+    ? parsedTurns.slice(0, -1)
+    : parsedTurns;
 
   if (!turns.length) {
     if (fallbackMessages.length) {
@@ -1876,7 +1957,7 @@ function CodexTmuxHistory({ pane, fallbackMessages }: { pane: CodexTmuxPane | nu
               <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
               <div className="flex items-center gap-2 py-2 text-sm text-gray-500">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-                Codex is working...
+                {pane?.stagedInput ? "Submitting to Codex..." : "Codex is working..."}
               </div>
             </article>
           )}
@@ -1974,7 +2055,7 @@ function CodexStatusLine({ pane }: { pane: CodexTmuxPane | null }) {
     <div className="flex justify-center">
       <div className="inline-flex items-center gap-2 rounded-full bg-gray-50 px-3 py-1.5 text-[11px] font-medium text-gray-400">
         <span className={`h-1.5 w-1.5 rounded-full ${pane?.ready ? "bg-emerald-500" : pane?.running ? "bg-amber-500" : "bg-gray-300"}`} />
-        {pane?.ready ? "Codex ready" : pane?.running ? "Codex working" : "Codex session not started"}
+        {pane?.ready ? "Codex ready" : pane?.stagedInput ? "Submitting to Codex" : pane?.running ? "Codex working" : "Codex session not started"}
       </div>
     </div>
   );

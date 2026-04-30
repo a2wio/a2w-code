@@ -11,6 +11,7 @@ export type CodexTmuxPane = {
   target: string;
   running: boolean;
   ready: boolean;
+  stagedInput?: string;
   output: string;
 };
 export type CodexTmuxControlKey = "up" | "down" | "enter" | "escape";
@@ -29,13 +30,7 @@ export async function getCodexTmuxPane(input: { workspace: Workspace; chatId: st
   const running = await tmuxSessionExists(sessionName);
   let output = running ? await capturePane(target) : "";
   let state = running ? codexPromptState(output) : { ready: false, stagedInput: "" };
-  if (running && state.stagedInput && !state.ready && !codexChoicePickerActive(output)) {
-    await tmux(["send-keys", "-t", target, "C-m"]);
-    await sleep(250);
-    output = await capturePane(target);
-    state = codexPromptState(output);
-  }
-  return { sessionName, target, running, ready: state.ready, output };
+  return { sessionName, target, running, ready: state.ready, stagedInput: state.stagedInput || undefined, output };
 }
 
 export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: string }) {
@@ -47,20 +42,22 @@ export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: st
     await waitForCodexPrompt(target);
   } else {
     const output = await capturePane(target);
-    if (!codexPromptState(output).ready) {
+    const state = codexPromptState(output);
+    if (!state.ready && state.stagedInput) {
+      await clearCodexInput(target);
+    } else if (!state.ready) {
       throw new Error("Codex is still responding in this chat. Wait for the live session to finish before sending another message.");
     }
   }
 
-  await tmux(["send-keys", "-t", target, "C-u"]);
-  await sleep(80);
+  await clearCodexInput(target);
   await sendLiteral(target, input.message);
-  await sleep(120);
-  await tmux(["send-keys", "-t", target, "C-m"]);
-  await sleep(250);
+  await sleep(220);
+  await tmux(["send-keys", "-t", target, "Enter"]);
+  await sleep(500);
 
   const pane = await getCodexTmuxPane({ workspace: input.workspace, chatId: input.chat.id });
-  return { ...pane, ready: false };
+  return pane;
 }
 
 export async function sendCodexTmuxChoice(input: { workspace: Workspace; chatId: string; activeIndex: number; index: number }) {
@@ -73,7 +70,7 @@ export async function sendCodexTmuxChoice(input: { workspace: Workspace; chatId:
     await tmux(["send-keys", "-t", sessionName, key]);
     await sleep(40);
   }
-  await tmux(["send-keys", "-t", sessionName, "C-m"]);
+  await tmux(["send-keys", "-t", sessionName, "Enter"]);
   await sleep(250);
   return getCodexTmuxPane({ workspace: input.workspace, chatId: input.chatId });
 }
@@ -85,6 +82,12 @@ export async function sendCodexTmuxControl(input: { workspace: Workspace; chatId
   await tmux(["send-keys", "-t", sessionName, codexTmuxControlKey(input.key)]);
   await sleep(input.key === "enter" ? 250 : 120);
   return getCodexTmuxPane({ workspace: input.workspace, chatId: input.chatId });
+}
+
+export async function stopCodexTmuxSession(input: { workspace: Workspace; chatId: string }) {
+  const sessionName = codexTmuxSessionName(input.workspace.id, input.chatId);
+  if (!(await tmuxSessionExists(sessionName))) return;
+  await tmux(["kill-session", "-t", sessionName]);
 }
 
 async function startCodexTmuxSession(input: CodexTmuxInput, sessionName: string) {
@@ -108,6 +111,11 @@ async function startCodexTmuxSession(input: CodexTmuxInput, sessionName: string)
 async function sendLiteral(target: string, value: string) {
   const normalized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   await tmux(["send-keys", "-l", "-t", target, normalized]);
+}
+
+async function clearCodexInput(target: string) {
+  await tmux(["send-keys", "-t", target, "C-u"]);
+  await sleep(100);
 }
 
 async function capturePane(target: string) {
@@ -141,7 +149,7 @@ function codexTmuxControlKey(key: CodexTmuxControlKey) {
   if (key === "up") return "Up";
   if (key === "down") return "Down";
   if (key === "escape") return "Escape";
-  return "C-m";
+  return "Enter";
 }
 
 async function waitForCodexPrompt(target: string) {
@@ -156,13 +164,25 @@ async function waitForCodexPrompt(target: string) {
 
 function codexPromptState(output: string) {
   const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (codexChoicePickerActive(output)) return { ready: false, stagedInput: "" };
+  if (codexInterruptActive(lines)) return { ready: false, stagedInput: "" };
   const prompt = lines.slice(-16).reverse().find((line) => line.startsWith("›"));
   if (!prompt) return { ready: false, stagedInput: "" };
   const stagedInput = prompt.replace(/^›\s*/, "").trim();
+  if (stagedInput && !isCodexPlaceholder(stagedInput)) return { ready: false, stagedInput };
+  if (codexFooterReady(lines)) return { ready: true, stagedInput: "" };
   return {
     ready: !stagedInput || isCodexPlaceholder(stagedInput),
     stagedInput
   };
+}
+
+function codexFooterReady(lines: string[]) {
+  return lines.slice(-8).some((line) => /gpt-[\w.-]+.*·.*\//i.test(line));
+}
+
+function codexInterruptActive(lines: string[]) {
+  return lines.slice(-16).some((line) => /(?:esc|ctrl-c|control-c)\s+to\s+interrupt/i.test(line));
 }
 
 function codexChoicePickerActive(output: string) {

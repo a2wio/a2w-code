@@ -131,6 +131,7 @@ export type Event = {
     | "plan.created"
     | "plan.files_materialized"
     | "plan.approved"
+    | "chat.deleted"
     | "sandbox.run_started"
     | "sandbox.run_completed"
     | "sandbox.run_failed";

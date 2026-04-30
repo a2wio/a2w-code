@@ -49,7 +49,7 @@ export async function getGitStatus(workspaceId: string): Promise<GitWorkspaceSta
 
   const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim() || "detached").catch(() => "unknown");
   const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
-  const porcelain = await git(repoRoot, ["status", "--short"]).catch(() => "");
+  const porcelain = await git(repoRoot, ["status", "--short", "--untracked-files=all"]).catch(() => "");
   const files = await Promise.all(parseStatus(porcelain).map((item) => diffForFile(repoRoot, item)));
 
   return {

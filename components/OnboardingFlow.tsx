@@ -252,7 +252,7 @@ export function OnboardingFlow({
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || data.errors?.join(" ") || "Could not complete onboarding.");
-      router.push("/dashboard/agent");
+      router.push(data.plan?.chatId ? `/dashboard/agent?chat=${encodeURIComponent(data.plan.chatId)}` : "/dashboard/agent?chat=new");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
