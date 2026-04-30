@@ -7,18 +7,16 @@ on:
       - main
     paths:
       - ".github/workflows/container-images.yml"
-      - "app/**"
-      - "components/**"
-      - "src/**"
+      - "apps/web/src/**"
+      - "apps/web/tests/**"
       - "sandbox/**"
-      - "tests/**"
       - "Dockerfile"
       - "Containerfile"
-      - "package.json"
-      - "package-lock.json"
-      - "next.config.mjs"
-      - "postcss.config.mjs"
-      - "tsconfig.json"
+      - "apps/web/package.json"
+      - "apps/web/package-lock.json"
+      - "apps/web/next.config.mjs"
+      - "apps/web/postcss.config.mjs"
+      - "apps/web/tsconfig.json"
     tags:
       - "v*"
 
@@ -43,18 +41,21 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install dependencies
+        working-directory: apps/web
         run: npm ci
 
       - name: Run tests
+        working-directory: apps/web
         run: node --test tests/*.test.js
 
       - name: Set image tags
         id: meta
         shell: bash
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -p "require('./apps/web/package.json').version")"
           SHORT_SHA="${GITHUB_SHA::12}"
           {
             echo "version=v${VERSION}"

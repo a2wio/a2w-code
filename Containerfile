@@ -1,13 +1,13 @@
 FROM node:22-bookworm-slim AS deps
 
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci
 
 FROM deps AS builder
 
 WORKDIR /app
-COPY . .
+COPY apps/web ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
@@ -15,6 +15,7 @@ FROM node:22-bookworm-slim AS runner
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
+    A2W_PROJECT_ROOT=/app \
     HOSTNAME=0.0.0.0 \
     PORT=5173
 
@@ -31,7 +32,7 @@ RUN mkdir -p /app/.data && chown -R node:node /app
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
-COPY --from=builder --chown=node:node /app/sandbox ./sandbox
+COPY --chown=node:node sandbox ./sandbox
 
 USER node
 

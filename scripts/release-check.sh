@@ -8,10 +8,14 @@ echo "== A2W release check =="
 
 required_files="
 README.md
-.env.example
+apps/web/.env.example
 Dockerfile
 Containerfile
 compose.yaml
+apps/web/package.json
+apps/web/package-lock.json
+apps/web/next.config.mjs
+apps/web/tsconfig.json
 sandbox/Containerfile
 sandbox/scripts/terraform-fmt.sh
 sandbox/scripts/terraform-plan.sh
@@ -26,8 +30,8 @@ for file in $required_files; do
   fi
 done
 
-npm test
-npm run build
+(cd apps/web && npm test)
+(cd apps/web && npm run build)
 
 if [ "${A2W_RELEASE_SKIP_SANDBOX:-}" = "1" ]; then
   echo "Skipping sandbox image build because A2W_RELEASE_SKIP_SANDBOX=1."

@@ -15,6 +15,7 @@ This release is packaged for self-hosted operation. The image includes the Codex
 ## Host Deployment
 
 ```sh
+cd apps/web
 cp .env.example .env.local
 ```
 
@@ -27,6 +28,7 @@ Set strong values for:
 Build the Terraform sandbox image:
 
 ```sh
+cd apps/web
 npm run sandbox:build
 ```
 
@@ -41,6 +43,7 @@ The onboarding UI can start `codex login --device-auth` inside tmux and render t
 Build and start the UI:
 
 ```sh
+cd apps/web
 npm ci
 npm run build
 npm start
@@ -53,12 +56,14 @@ Open `http://127.0.0.1:5173`.
 The app image includes the Next.js server, Codex CLI, Git, SSH client, tmux, and Podman tooling. It is useful for a Linux self-host where the app container can reach the host Podman socket. The app still executes Terraform through the separate `a2w-infra-sandbox:latest` image.
 
 ```sh
+cd apps/web
 npm run container:build
 ```
 
-Then configure `.env.local` and run:
+Then configure `apps/web/.env.local` and run from the repository root:
 
 ```sh
+cd ../..
 podman compose up -d
 ```
 
@@ -92,6 +97,7 @@ A2W_CODEX_BYPASS_SANDBOX=true
 ## Release Check
 
 ```sh
+cd apps/web
 npm run release:check
 ```
 
@@ -100,6 +106,7 @@ The check runs unit tests, a production Next build, and a sandbox image build wh
 To skip the sandbox image build in CI:
 
 ```sh
+cd apps/web
 A2W_RELEASE_SKIP_SANDBOX=1 npm run release:check
 ```
 
@@ -114,10 +121,10 @@ Configure these repository secrets:
 
 The workflow pushes:
 
-- `registry.k6nis.dev/a2w/codex-terraform:v<package.json version>`
+- `registry.k6nis.dev/a2w/codex-terraform:v<apps/web/package.json version>`
 - `registry.k6nis.dev/a2w/codex-terraform:latest`
 - `registry.k6nis.dev/a2w/codex-terraform:sha-<short-sha>`
-- `registry.k6nis.dev/a2w/infra-sandbox:v<package.json version>`
+- `registry.k6nis.dev/a2w/infra-sandbox:v<apps/web/package.json version>`
 - `registry.k6nis.dev/a2w/infra-sandbox:latest`
 - `registry.k6nis.dev/a2w/infra-sandbox:sha-<short-sha>`
 
@@ -126,6 +133,7 @@ Run it from GitHub Actions with **Container Images > Run workflow**, or push to 
 ## Release Archive
 
 ```sh
+cd apps/web
 npm run release:archive
 ```
 
@@ -134,7 +142,7 @@ This creates `dist/a2w-codex-terraform-v0.0.1.tar.gz` from tracked files plus un
 ## Publishing Checklist
 
 - Pick and add the project license before publishing publicly.
-- Keep `.data/`, `.env.local`, `.next/`, and `node_modules/` out of the release.
+- Keep `.data/`, `apps/web/.env.local`, `apps/web/.next/`, and `node_modules/` out of the release.
 - Confirm `A2W_ENABLE_TERRAFORM_APPLY=false` in the default environment.
 - Tag the release as `v0.0.1`.
 - Include the sandbox image build command in release notes.

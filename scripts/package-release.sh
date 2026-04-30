@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="$(node -p "require('./package.json').version")"
+VERSION="$(node -p "require('./apps/web/package.json').version")"
 NAME="a2w-codex-terraform-v$VERSION"
 OUT_DIR="$ROOT_DIR/dist"
 ARCHIVE="$OUT_DIR/$NAME.tar.gz"

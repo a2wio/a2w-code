@@ -1,4 +1,4 @@
-# <img src="./public/a2w-codex-logo.png" width="25"/> A2W Infra Agent Console
+# <img src="./apps/web/public/a2w-codex-logo.png" width="25"/> A2W Infra Agent Console
 
 Self-hosted infrastructure editor for platform engineers. A2W combines a Codex-backed chat, a Terraform repository browser, Git controls, and gated sandbox actions for `fmt`, `plan`, `apply`, and `destroy`.
 
@@ -14,9 +14,17 @@ The MVP is single-admin and single-instance. Credentials are stored locally in `
   - modules: `infrastructure/terraform/modules/<provider>/<module>`
   - roots: `infrastructure/terraform/providers/<provider>/<region>/<stack>`
 
+## Repository Layout
+
+- `apps/web`: Next.js application package
+- `sandbox`: Terraform runner image and scripts
+- `examples`: self-hosting examples
+- `docs`: release and design notes
+
 ## Local Run
 
 ```sh
+cd apps/web
 cp .env.example .env.local
 npm install
 npm run dev
@@ -34,6 +42,8 @@ For production-style local run:
 npm run build
 npm start
 ```
+
+The web application package lives in `apps/web`. Runtime data is stored in the repository-level `.data/` directory by default.
 
 ## Required Env
 
@@ -64,7 +74,7 @@ Keep that disabled for local host-first use.
 
 ## Terraform Sandbox
 
-Local Podman:
+Local Podman, from the repository root:
 
 ```sh
 podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox
@@ -116,6 +126,7 @@ podman build --platform linux/amd64 -t registry.k6nis.dev/a2w/infra-sandbox:v0.0
 ## Checks
 
 ```sh
+cd apps/web
 npm test
 npm run build
 ```
@@ -123,6 +134,7 @@ npm run build
 Release helper:
 
 ```sh
+cd apps/web
 npm run release:check
 ```
 

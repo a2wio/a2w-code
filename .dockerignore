@@ -1,13 +1,16 @@
 .git
 .data
 .next
+apps/web/.next
 node_modules
+apps/web/node_modules
 npm-debug.log*
 .DS_Store
 .env
 .env.*
-!.env.example
+!apps/web/.env.example
 coverage
+apps/web/coverage
 dist
 tmp
 *.log

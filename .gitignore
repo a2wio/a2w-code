@@ -1,9 +1,11 @@
 .DS_Store
 .env
 .env.*
-!.env.example
+!apps/web/.env.example
 .data/
 .next/
+apps/web/.next/
 dist/
 node_modules/
+apps/web/node_modules/
 npm-debug.log*
