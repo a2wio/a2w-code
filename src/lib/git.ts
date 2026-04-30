@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { workspaceRepoRoot } from "./data";
-import type { GitAuthMethod, GitProvider, GitRepositoryMode, GitWorkspaceStatus, WorkspaceDiffFile } from "./types";
+import type { GitAuthMethod, GitCommit, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, WorkspaceDiffFile } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +49,9 @@ export async function getGitStatus(workspaceId: string): Promise<GitWorkspaceSta
 
   const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim() || "detached").catch(() => "unknown");
   const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
+  const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
+  const [ahead, behind] = upstream ? await aheadBehind(repoRoot) : [0, 0];
+  const head = await gitCommit(repoRoot, "HEAD").catch(() => undefined);
   const porcelain = await git(repoRoot, ["status", "--short", "--untracked-files=all"]).catch(() => "");
   const files = await Promise.all(parseStatus(porcelain).map((item) => diffForFile(repoRoot, item)));
 
@@ -58,9 +61,27 @@ export async function getGitStatus(workspaceId: string): Promise<GitWorkspaceSta
     repositoryName: repositoryName(remoteOrigin) || localRepositoryName,
     remoteUrl: remoteOrigin,
     branch,
+    upstream,
+    ahead,
+    behind,
+    head,
     clean: files.length === 0,
     files
   };
+}
+
+export async function getGitDetails(workspaceId: string) {
+  const status = await getGitStatus(workspaceId);
+  if (!status.available || !status.initialized) {
+    return { git: status, history: [] as GitCommit[], stashes: [] as GitStashEntry[] };
+  }
+
+  const repoRoot = workspaceRepoRoot(workspaceId);
+  const [history, stashes] = await Promise.all([
+    gitHistory(repoRoot, 40).catch(() => []),
+    gitStashes(repoRoot).catch(() => [])
+  ]);
+  return { git: status, history, stashes };
 }
 
 export async function initializeGit(workspaceId: string) {
@@ -93,20 +114,163 @@ export async function setupWorkspaceRepository(workspaceId: string, input: Setup
   return getGitStatus(workspaceId);
 }
 
-export async function commitWorkspace(workspaceId: string, message: string) {
+export async function stageWorkspace(workspaceId: string, paths: string[] = []) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const safePaths = paths.map(cleanRelativePath);
+  await git(repoRoot, safePaths.length ? ["add", "--", ...safePaths] : ["add", "-A"]);
+  return getGitDetails(workspaceId);
+}
+
+export async function unstageWorkspace(workspaceId: string, paths: string[] = []) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const safePaths = paths.map(cleanRelativePath);
+  await git(repoRoot, safePaths.length ? ["restore", "--staged", "--", ...safePaths] : ["restore", "--staged", "."]);
+  return getGitDetails(workspaceId);
+}
+
+export async function discardWorkspaceFile(workspaceId: string, path: string, confirm: string) {
+  if (confirm !== "DISCARD") throw new Error("Type DISCARD to discard a file.");
+  const repoRoot = await requireGitRepository(workspaceId);
+  const safePath = cleanRelativePath(path);
+  await git(repoRoot, ["restore", "--staged", "--worktree", "--", safePath]).catch(async () => {
+    await git(repoRoot, ["clean", "-fd", "--", safePath]);
+  });
+  return getGitDetails(workspaceId);
+}
+
+export async function resetWorkspaceChanges(workspaceId: string, confirm: string) {
+  if (confirm !== "RESET") throw new Error("Type RESET to discard all workspace changes.");
+  const repoRoot = await requireGitRepository(workspaceId);
+  const hasHead = await git(repoRoot, ["rev-parse", "--verify", "HEAD"]).then(() => true).catch(() => false);
+  if (hasHead) {
+    await git(repoRoot, ["reset", "--hard"]);
+  } else {
+    await git(repoRoot, ["rm", "-r", "--cached", "."], 30_000).catch(() => undefined);
+  }
+  await git(repoRoot, ["clean", "-fd"]);
+  return getGitDetails(workspaceId);
+}
+
+export async function commitWorkspace(workspaceId: string, message: string, mode: "all" | "staged" = "all") {
   const cleanMessage = message.replace(/\s+/g, " ").trim();
   if (!cleanMessage) throw new Error("Commit message is required.");
 
   const repoRoot = workspaceRepoRoot(workspaceId);
   if (!(await isGitRepository(repoRoot))) await initializeGit(workspaceId);
   await ensureGitIdentity(repoRoot);
-  await git(repoRoot, ["add", "-A"]);
+  if (mode === "all") await git(repoRoot, ["add", "-A"]);
 
-  const status = await git(repoRoot, ["status", "--short"]);
-  if (!status.trim()) throw new Error("No workspace changes to commit.");
+  const staged = await hasStagedChanges(repoRoot);
+  if (!staged) throw new Error(mode === "staged" ? "No staged changes to commit." : "No workspace changes to commit.");
 
   await git(repoRoot, ["commit", "-m", cleanMessage]);
-  return getGitStatus(workspaceId);
+  return getGitDetails(workspaceId);
+}
+
+export async function pushWorkspace(workspaceId: string) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
+  if (!branch) throw new Error("Cannot push from a detached HEAD. Create or checkout a branch first.");
+  const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
+  await git(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], 120_000);
+  return getGitDetails(workspaceId);
+}
+
+export async function stashWorkspace(workspaceId: string, input: { includeUntracked?: boolean; message?: string } = {}) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  if (await isWorkingTreeClean(repoRoot)) throw new Error("There are no changes to stash.");
+  const message = input.message?.replace(/\s+/g, " ").trim() || "A2W workspace stash";
+  await git(repoRoot, ["stash", "push", ...(input.includeUntracked ? ["--include-untracked"] : []), "-m", message]);
+  return getGitDetails(workspaceId);
+}
+
+export async function applyStash(workspaceId: string, index: number, mode: "apply" | "pop" = "apply") {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const ref = stashRef(index);
+  await git(repoRoot, ["stash", mode, ref]);
+  return getGitDetails(workspaceId);
+}
+
+export async function dropStash(workspaceId: string, index: number, confirm: string) {
+  if (confirm !== "DROP") throw new Error("Type DROP to delete a stash.");
+  const repoRoot = await requireGitRepository(workspaceId);
+  await git(repoRoot, ["stash", "drop", stashRef(index)]);
+  return getGitDetails(workspaceId);
+}
+
+export async function checkoutGitRef(workspaceId: string, input: { ref: string; stashBefore?: boolean; createBranch?: string }) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const ref = cleanGitRef(input.ref);
+  await ensureCleanOrStash(repoRoot, input.stashBefore);
+  const branch = input.createBranch?.trim();
+  if (branch) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(branch)) throw new Error("Branch name contains unsupported characters.");
+    await git(repoRoot, ["checkout", "-b", branch, ref]);
+  } else {
+    await git(repoRoot, ["checkout", ref]);
+  }
+  return getGitDetails(workspaceId);
+}
+
+export async function revertCommit(workspaceId: string, input: { ref: string; stashBefore?: boolean }) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  await ensureCleanOrStash(repoRoot, input.stashBefore);
+  await git(repoRoot, ["revert", "--no-edit", cleanGitRef(input.ref)]);
+  return getGitDetails(workspaceId);
+}
+
+export async function resetToCommit(workspaceId: string, input: { ref: string; confirm: string; stashBefore?: boolean }) {
+  if (input.confirm !== "RESET") throw new Error("Type RESET to hard reset the repository.");
+  const repoRoot = await requireGitRepository(workspaceId);
+  await ensureCleanOrStash(repoRoot, input.stashBefore);
+  await git(repoRoot, ["reset", "--hard", cleanGitRef(input.ref)]);
+  return getGitDetails(workspaceId);
+}
+
+async function requireGitRepository(workspaceId: string) {
+  const repoRoot = workspaceRepoRoot(workspaceId);
+  if (!(await gitAvailable())) throw new Error("git is not available on PATH.");
+  if (!(await isGitRepository(repoRoot))) throw new Error("Workspace Git repository is not initialized yet.");
+  return repoRoot;
+}
+
+async function ensureCleanOrStash(repoRoot: string, stashBefore = false) {
+  if (await isWorkingTreeClean(repoRoot)) return;
+  if (!stashBefore) {
+    throw new Error("Working tree has uncommitted changes. Stash or commit before changing history.");
+  }
+  await git(repoRoot, ["stash", "push", "--include-untracked", "-m", "A2W auto-stash before Git history action"]);
+}
+
+async function isWorkingTreeClean(repoRoot: string) {
+  const status = await git(repoRoot, ["status", "--short", "--untracked-files=all"]).catch(() => "");
+  return !status.trim();
+}
+
+async function hasStagedChanges(repoRoot: string) {
+  try {
+    await git(repoRoot, ["diff", "--cached", "--quiet"]);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function cleanRelativePath(path: string) {
+  const clean = String(path || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!clean || clean.includes("..") || clean.startsWith(".git/")) throw new Error("Invalid Git path.");
+  return clean;
+}
+
+function cleanGitRef(ref: string) {
+  const clean = String(ref || "").trim();
+  if (!/^[A-Za-z0-9._/@{}:-]+$/.test(clean)) throw new Error("Invalid Git ref.");
+  return clean;
+}
+
+function stashRef(index: number) {
+  if (!Number.isInteger(index) || index < 0) throw new Error("Valid stash index is required.");
+  return `stash@{${index}}`;
 }
 
 async function setupDstackRepository(repoRoot: string, input: SetupWorkspaceRepositoryInput) {
@@ -170,6 +334,71 @@ function cleanRepositoryUrl(value: unknown) {
   return url;
 }
 
+async function aheadBehind(repoRoot: string): Promise<[number, number]> {
+  const output = await git(repoRoot, ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]).catch(() => "0\t0");
+  const [aheadRaw, behindRaw] = output.trim().split(/\s+/);
+  return [Number(aheadRaw || 0), Number(behindRaw || 0)];
+}
+
+async function gitHistory(repoRoot: string, limit: number): Promise<GitCommit[]> {
+  const output = await git(repoRoot, [
+    "log",
+    `-${limit}`,
+    "--branches",
+    "--remotes",
+    "--tags",
+    "--reflog",
+    "--date=iso-strict",
+    "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cr%x1f%D%x1f%s%x1e"
+  ]).catch(() => "");
+  return parseGitCommitRecords(output);
+}
+
+async function gitCommit(repoRoot: string, ref: string): Promise<GitCommit | undefined> {
+  const output = await git(repoRoot, [
+    "show",
+    "-s",
+    "--date=iso-strict",
+    "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cr%x1f%D%x1f%s%x1e",
+    ref
+  ]).catch(() => "");
+  return parseGitCommitRecords(output)[0];
+}
+
+function parseGitCommitRecords(output: string): GitCommit[] {
+  return output
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [hash = "", shortHash = "", parents = "", authorName = "", authorEmail = "", createdAt = "", relativeTime = "", refs = "", subject = ""] = record.split("\x1f");
+      return {
+        hash,
+        shortHash,
+        parents: parents.split(" ").map((item) => item.trim()).filter(Boolean),
+        authorName,
+        authorEmail,
+        createdAt,
+        relativeTime,
+        refs: refs.split(",").map((item) => item.trim()).filter(Boolean),
+        subject
+      };
+    });
+}
+
+async function gitStashes(repoRoot: string): Promise<GitStashEntry[]> {
+  const output = await git(repoRoot, ["stash", "list", "--format=%gd%x1f%cr%x1f%gs%x1e"]).catch(() => "");
+  return output
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [name = "", relativeTime = "", message = ""] = record.split("\x1f");
+      const index = Number(name.match(/\{(\d+)\}/)?.[1] || 0);
+      return { index, name, relativeTime, message };
+    });
+}
+
 async function assertRepositoryRootIsEmpty(repoRoot: string) {
   await mkdir(repoRoot, { recursive: true });
   const entries = (await readdir(repoRoot)).filter((entry) => entry !== ".DS_Store");
@@ -231,7 +460,7 @@ function repositoryName(remoteUrl: string) {
   return path.split("/").filter(Boolean).at(-1) || "";
 }
 
-async function diffForFile(repoRoot: string, item: { path: string; status: string }): Promise<WorkspaceDiffFile> {
+async function diffForFile(repoRoot: string, item: { path: string; status: string; indexStatus?: string; worktreeStatus?: string }): Promise<WorkspaceDiffFile> {
   if (item.status.includes("?")) {
     const diff = await git(repoRoot, ["diff", "--no-index", "--", "/dev/null", item.path]).catch((error: CommandError) => {
       const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
@@ -251,10 +480,16 @@ function parseStatus(output: string) {
     .map((line) => line.trimEnd())
     .filter(Boolean)
     .map((line) => {
-      const status = line.slice(0, 2).trim() || line.slice(0, 2);
+      const rawStatus = line.slice(0, 2);
+      const status = rawStatus.trim() || rawStatus;
       const rawPath = line.slice(3).trim();
       const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1) || rawPath : rawPath;
-      return { status, path };
+      return {
+        status,
+        indexStatus: rawStatus[0]?.trim() || "",
+        worktreeStatus: rawStatus[1]?.trim() || "",
+        path
+      };
     });
 }
 
@@ -284,10 +519,10 @@ async function gitAvailable() {
   }
 }
 
-async function git(repoRoot: string, args: string[]) {
+async function git(repoRoot: string, args: string[], timeout = 30_000) {
   const result = await execFileAsync("git", args, {
     cwd: repoRoot,
-    timeout: 30_000,
+    timeout,
     maxBuffer: 1024 * 1024 * 4
   });
   return `${result.stdout || ""}${result.stderr || ""}`;

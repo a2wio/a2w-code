@@ -7,6 +7,8 @@ export function Modal({
   title,
   description,
   icon,
+  iconClassName,
+  iconFrameClassName,
   danger,
   size = "md",
   children,
@@ -15,12 +17,14 @@ export function Modal({
   title: string;
   description: string;
   icon: string;
+  iconClassName?: string;
+  iconFrameClassName?: string;
   danger?: boolean;
   size?: "md" | "xl";
   children: ReactNode;
   onClose: () => void;
 }) {
-  const frame = "h-[min(82vh,760px)] w-[min(94vw,1040px)]";
+  const frame = "h-[calc(100vh-48px)] w-[calc(100vw-48px)]";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/5 p-4 backdrop-blur-[2px]" onClick={onClose}>
@@ -32,11 +36,11 @@ export function Modal({
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-gray-100 p-6">
             <div className="flex items-start gap-4">
               <span
-                className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white ${
+                className={iconFrameClassName || `grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white ${
                   danger ? "bg-red-700" : "bg-black"
                 }`}
               >
-                <Icon name={icon} />
+                <Icon name={icon} className={iconClassName} />
               </span>
               <div>
                 <h2 className={`text-2xl font-semibold tracking-[-0.03em] ${danger ? "text-red-950" : "text-black"}`}>
@@ -53,7 +57,7 @@ export function Modal({
               <Icon name="fa-xmark" />
             </button>
           </div>
-          <div className="thin-scrollbar min-h-0 flex-1 overflow-auto p-6">
+          <div className="thin-scrollbar min-h-0 flex-1 overflow-auto px-6 py-0">
             {children}
           </div>
         </div>

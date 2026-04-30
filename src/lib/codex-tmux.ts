@@ -11,6 +11,7 @@ export type CodexTmuxPane = {
   target: string;
   running: boolean;
   ready: boolean;
+  viewingTranscript?: boolean;
   stagedInput?: string;
   output: string;
 };
@@ -30,7 +31,7 @@ export async function getCodexTmuxPane(input: { workspace: Workspace; chatId: st
   const running = await tmuxSessionExists(sessionName);
   let output = running ? await capturePane(target) : "";
   let state = running ? codexPromptState(output) : { ready: false, stagedInput: "" };
-  return { sessionName, target, running, ready: state.ready, stagedInput: state.stagedInput || undefined, output };
+  return { sessionName, target, running, ready: state.ready, viewingTranscript: state.viewingTranscript || undefined, stagedInput: state.stagedInput || undefined, output };
 }
 
 export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: string }) {
@@ -43,7 +44,10 @@ export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: st
   } else {
     const output = await capturePane(target);
     const state = codexPromptState(output);
-    if (!state.ready && state.stagedInput) {
+    if (!state.ready && state.viewingTranscript) {
+      await tmux(["send-keys", "-t", target, "q"]);
+      await waitForCodexPrompt(target);
+    } else if (!state.ready && state.stagedInput) {
       await clearCodexInput(target);
     } else if (!state.ready) {
       throw new Error("Codex is still responding in this chat. Wait for the live session to finish before sending another message.");
@@ -167,14 +171,22 @@ function codexPromptState(output: string) {
   if (codexChoicePickerActive(output)) return { ready: false, stagedInput: "" };
   if (codexInterruptActive(lines)) return { ready: false, stagedInput: "" };
   const prompt = lines.slice(-16).reverse().find((line) => line.startsWith("›"));
-  if (!prompt) return { ready: false, stagedInput: "" };
-  const stagedInput = prompt.replace(/^›\s*/, "").trim();
-  if (stagedInput && !isCodexPlaceholder(stagedInput)) return { ready: false, stagedInput };
-  if (codexFooterReady(lines)) return { ready: true, stagedInput: "" };
-  return {
-    ready: !stagedInput || isCodexPlaceholder(stagedInput),
-    stagedInput
-  };
+  if (prompt) {
+    const stagedInput = prompt.replace(/^›\s*/, "").trim();
+    if (stagedInput && !isCodexPlaceholder(stagedInput)) return { ready: false, stagedInput };
+    if (codexFooterReady(lines)) return { ready: true, stagedInput: "" };
+    return {
+      ready: !stagedInput || isCodexPlaceholder(stagedInput),
+      stagedInput
+    };
+  }
+  if (codexTranscriptViewerActive(lines)) return { ready: false, stagedInput: "", viewingTranscript: true };
+  return { ready: false, stagedInput: "" };
+}
+
+function codexTranscriptViewerActive(lines: string[]) {
+  const tail = lines.slice(-30).join(" ");
+  return /q to quit/i.test(tail) && /(?:↑\/↓|pgup\/pgdn|home\/end|to scroll|to page|to jump|edit prev|edit next)/i.test(tail);
 }
 
 function codexFooterReady(lines: string[]) {
@@ -193,7 +205,14 @@ function codexChoicePickerActive(output: string) {
 }
 
 function isCodexPlaceholder(value: string) {
-  return /^(find and fix|write tests|explain|review|ask|message|type)/i.test(value) || value.includes("@filename");
+  const clean = value.trim().toLowerCase();
+  if (!clean) return true;
+  if (clean === "explain this codebase") return true;
+  if (clean === "review my changes") return true;
+  if (clean === "find and fix a bug") return true;
+  if (/^type\s+(a\s+)?message/.test(clean)) return true;
+  if (/^(ask|message)\s+codex\b/.test(clean)) return true;
+  return /^(find and fix|write tests|explain|review)\b/.test(clean) && clean.includes("@filename");
 }
 
 function sleep(ms: number) {

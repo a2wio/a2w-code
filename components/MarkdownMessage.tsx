@@ -15,7 +15,7 @@ export function MarkdownMessage({ content }: { content: string }) {
   }
 
   return (
-    <div className="space-y-4 text-sm leading-7 text-gray-900">
+    <div className="min-w-0 max-w-full space-y-4 overflow-hidden text-sm leading-7 text-gray-900 [overflow-wrap:anywhere]">
       {blocks.map((block, index) => (
         <MarkdownBlock block={block} key={`${block.type}-${index}`} />
       ))}
@@ -26,13 +26,13 @@ export function MarkdownMessage({ content }: { content: string }) {
 function MarkdownBlock({ block }: { block: Block }) {
   if (block.type === "code") {
     return (
-      <div className="overflow-hidden rounded-[1rem] border border-gray-200 bg-[#111]">
+      <div className="max-w-full overflow-hidden rounded-[1rem] border border-gray-200 bg-[#111]">
         {block.language ? (
           <div className="border-b border-white/10 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-gray-400">
             {block.language}
           </div>
         ) : null}
-        <pre className="thin-scrollbar max-h-96 overflow-auto p-3 text-xs leading-6 text-gray-100">
+        <pre className="thin-scrollbar max-h-96 max-w-full overflow-auto p-3 text-xs leading-6 text-gray-100">
           <code>{block.value}</code>
         </pre>
       </div>
@@ -55,7 +55,7 @@ function MarkdownBlock({ block }: { block: Block }) {
     return (
       <ListTag className={`${block.ordered ? "list-decimal" : "list-disc"} space-y-1 pl-5`}>
         {block.items.map((item, index) => (
-          <li key={`${item}-${index}`}>{renderInlineMarkdown(item)}</li>
+          <li className="min-w-0 [overflow-wrap:anywhere]" key={`${item}-${index}`}>{renderInlineMarkdown(item)}</li>
         ))}
       </ListTag>
     );
@@ -69,7 +69,7 @@ function MarkdownBlock({ block }: { block: Block }) {
     );
   }
 
-  return <p>{renderInlineMarkdown(block.value)}</p>;
+  return <p className="min-w-0 [overflow-wrap:anywhere]">{renderInlineMarkdown(block.value)}</p>;
 }
 
 function parseMarkdownBlocks(content: string): Block[] {
@@ -170,7 +170,7 @@ function renderInlineMarkdown(value: string): ReactNode[] {
 
     if (match[2]) {
       nodes.push(
-        <code className="rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 text-[0.85em] text-gray-900" key={nodes.length}>
+        <code className="rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 text-[0.85em] text-gray-900 [overflow-wrap:anywhere]" key={nodes.length}>
           {match[2]}
         </code>
       );
@@ -181,7 +181,7 @@ function renderInlineMarkdown(value: string): ReactNode[] {
     } else if (match[5] && match[6]) {
       nodes.push(
         <a
-          className="font-medium text-gray-950 underline decoration-gray-300 underline-offset-4 transition hover:decoration-gray-900"
+          className="font-medium text-gray-950 underline decoration-gray-300 underline-offset-4 transition [overflow-wrap:anywhere] hover:decoration-gray-900"
           href={safeHref(match[6])}
           key={nodes.length}
           rel="noreferrer"

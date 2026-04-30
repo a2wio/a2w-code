@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, ReactNode, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import type { Chat, InfraPlan, Message, ProviderConnection, Workspace } from "@/src/lib/types";
 import { Icon } from "./Icon";
 import { Modal } from "./Modal";
@@ -12,6 +12,8 @@ const navItems = [
   { id: "credentials", label: "Credentials", icon: "fa-key" },
   { id: "settings", label: "Settings", icon: "fa-gear" }
 ] as const;
+const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
+const CHAT_DELETE_EVENT = "a2w:chat-delete";
 
 type ChatThread = {
   id: string;
@@ -50,13 +52,41 @@ export function DashboardShell({
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [modal, setModal] = useState<ShellModal>(null);
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
-  const threads = buildChatThreads(chats);
+  const [chatList, setChatList] = useState(chats);
+  const threads = buildChatThreads(chatList);
   const latestThread = threads[0];
   const activeChatId = searchParams.get("chat") || latestThread?.id || "new";
   const isChat = pathname === "/dashboard/agent";
   const isFiles = pathname === "/dashboard/files";
   const newChatActive = isChat && activeChatId === "new";
   const homeHref = latestThread ? `/dashboard/agent?chat=${encodeURIComponent(latestThread.id)}` : "/dashboard/agent?chat=new";
+
+  useEffect(() => {
+    setChatList(chats);
+  }, [chats]);
+
+  useEffect(() => {
+    function handleChatUpsert(event: Event) {
+      const chat = (event as CustomEvent<Chat>).detail;
+      if (!chat?.id) return;
+      setChatList((current) => current.some((item) => item.id === chat.id)
+        ? current.map((item) => item.id === chat.id ? chat : item)
+        : [chat, ...current]);
+    }
+
+    function handleChatDelete(event: Event) {
+      const chatId = (event as CustomEvent<{ id: string }>).detail?.id;
+      if (!chatId) return;
+      setChatList((current) => current.filter((chat) => chat.id !== chatId));
+    }
+
+    window.addEventListener(CHAT_UPSERT_EVENT, handleChatUpsert);
+    window.addEventListener(CHAT_DELETE_EVENT, handleChatDelete);
+    return () => {
+      window.removeEventListener(CHAT_UPSERT_EVENT, handleChatUpsert);
+      window.removeEventListener(CHAT_DELETE_EVENT, handleChatDelete);
+    };
+  }, []);
 
   async function renameChat(chatId: string, title: string) {
     setSavingChatId(chatId);
@@ -68,6 +98,12 @@ export function DashboardShell({
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not rename chat.");
+      if (data.chat) {
+        setChatList((current) => current.some((item) => item.id === data.chat.id)
+          ? current.map((item) => item.id === data.chat.id ? data.chat : item)
+          : [data.chat, ...current]);
+        window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
+      }
       router.refresh();
     } finally {
       setSavingChatId(null);
@@ -80,6 +116,8 @@ export function DashboardShell({
       const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: "DELETE" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not delete chat.");
+      setChatList((current) => current.filter((chat) => chat.id !== chatId));
+      window.dispatchEvent(new CustomEvent(CHAT_DELETE_EVENT, { detail: { id: chatId } }));
       if (isChat && activeChatId === chatId) {
         const nextThread = threads.find((thread) => thread.id !== chatId);
         router.replace(nextThread ? `/dashboard/agent?chat=${encodeURIComponent(nextThread.id)}` : "/dashboard/agent?chat=new");
@@ -202,7 +240,7 @@ function CompactSidebar({
         <button
           type="button"
           onClick={onOpen}
-          className="grid h-10 w-10 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white transition hover:bg-gray-900"
+          className="grid h-10 w-10 place-items-center rounded-2xl bg-[#5c4ee5] text-[11px] font-semibold text-white transition hover:bg-[#4f43c7]"
           aria-label={`Open ${workspace.companyName} navigation`}
           title="Open navigation"
         >
@@ -340,7 +378,7 @@ function ExpandedSidebar({
       <div className="border-b border-gray-200 px-3">
         <div className="flex h-[65px] items-center gap-3">
           <Link href={homeHref} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-3" aria-label="A2W chat home">
-            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-black text-[11px] font-semibold text-white">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-[#5c4ee5] text-[11px] font-semibold text-white">
               A2W
             </span>
             <span className="min-w-0">

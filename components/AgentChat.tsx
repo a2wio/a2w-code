@@ -3,7 +3,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Chat, CloudProvider, GitWorkspaceStatus, InfraPlan, Message, MessageAction, ProviderConnection, SandboxRun, TerraformRoot, TerraformVariableDefinition } from "@/src/lib/types";
+import type { Chat, CloudProvider, GitCommit, GitStashEntry, GitWorkspaceStatus, InfraPlan, Message, MessageAction, ProviderConnection, SandboxRun, TerraformRoot, TerraformVariableDefinition } from "@/src/lib/types";
 import { FilesBrowser } from "./FilesBrowser";
 import { Icon } from "./Icon";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -162,11 +162,15 @@ type CodexTmuxPane = {
   target: string;
   running: boolean;
   ready: boolean;
+  viewingTranscript?: boolean;
   stagedInput?: string;
   output: string;
 };
 type CodexControlKey = "up" | "down" | "enter" | "escape";
 const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
+const WORKSPACE_TREE_POLL_INTERVAL_MS = 5000;
+const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
+const CHAT_DELETE_EVENT = "a2w:chat-delete";
 
 export function AgentChat({
   chats,
@@ -208,11 +212,15 @@ export function AgentChat({
   const [selectedRootPath, setSelectedRootPath] = useState(initialRootPath);
   const [roots, setRoots] = useState(terraformRoots);
   const [git, setGit] = useState(gitStatus);
+  const [chatList, setChatList] = useState(chats);
+  const [gitHistory, setGitHistory] = useState<GitCommit[]>([]);
+  const [gitStashes, setGitStashes] = useState<GitStashEntry[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>(initialChatId || "new");
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [checksOpen, setChecksOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
+  const [commitPushOpen, setCommitPushOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
@@ -220,6 +228,7 @@ export function AgentChat({
   const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [gitLoading, setGitLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState("Update Terraform workspace");
+  const [stashMessage, setStashMessage] = useState("A2W workspace checkpoint");
   const [sandboxPlan, setSandboxPlan] = useState<InfraPlan | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
@@ -237,7 +246,7 @@ export function AgentChat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const codexPickerKeyRequest = useRef(0);
   const editorMode = activeChatId !== "new";
-  const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready);
+  const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready && !codexPane.viewingTranscript && !codexPane.stagedInput);
   const codexStagedInput = codexBusy ? codexPane?.stagedInput : "";
   const slashQuery = slashCommandQuery(value);
   const slashMatches = useMemo(() => {
@@ -250,7 +259,7 @@ export function AgentChat({
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
   const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
 
-  const chatThreads = useMemo(() => buildChatThreads(chats, messages, plans), [chats, messages, plans]);
+  const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
   const visibleMessages = useMemo(() => {
     if (activeChatId === "new") return [];
     return messages.filter((message) => message.chatId === activeChatId);
@@ -287,11 +296,41 @@ export function AgentChat({
   const activeApprovalStatusPlan = approvalStatusPlan?.chatId === activeChatId ? approvalStatusPlan : null;
 
   useEffect(() => {
+    setChatList(chats);
+  }, [chats]);
+
+  useEffect(() => {
+    function handleChatUpsert(event: Event) {
+      const chat = (event as CustomEvent<Chat>).detail;
+      if (!chat?.id) return;
+      setChatList((current) => current.some((item) => item.id === chat.id)
+        ? current.map((item) => item.id === chat.id ? chat : item)
+        : [chat, ...current]);
+    }
+
+    function handleChatDelete(event: Event) {
+      const chatId = (event as CustomEvent<{ id: string }>).detail?.id;
+      if (!chatId) return;
+      setChatList((current) => current.filter((chat) => chat.id !== chatId));
+    }
+
+    window.addEventListener(CHAT_UPSERT_EVENT, handleChatUpsert);
+    window.addEventListener(CHAT_DELETE_EVENT, handleChatDelete);
+    return () => {
+      window.removeEventListener(CHAT_UPSERT_EVENT, handleChatUpsert);
+      window.removeEventListener(CHAT_DELETE_EVENT, handleChatDelete);
+    };
+  }, []);
+
+  useEffect(() => {
     setActiveProviderConnection(providerConnection);
   }, [providerConnection]);
 
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [visibleMessages.length, pendingStatus, activeApprovalStatusPlan?.id, activeChatId, codexPane?.output]);
 
   useEffect(() => {
@@ -299,29 +338,30 @@ export function AgentChat({
   }, [slashQuery]);
 
   useEffect(() => {
-    if (!editorMode) return;
-    void refreshEditorFiles();
-  }, [editorMode, activeChatId]);
-
-  useEffect(() => {
     if (!editorMode || activeChatId === "new") return;
+    let cancelled = false;
+
     async function refreshWorkspaceState() {
       try {
         const filesResponse = await fetch("/api/files");
         const filesData = await filesResponse.json();
-        setEditorFiles(filesData.files || []);
+        if (!cancelled) setEditorFiles(filesData.files || []);
       } catch {
         // Keep background refresh quiet; explicit file actions still show errors.
       }
       try {
-        await refreshGit();
+        if (!cancelled) await refreshGit();
       } catch {
         // Git may be uninitialized while onboarding or first edits are in progress.
       }
     }
 
-    const timer = window.setInterval(refreshWorkspaceState, 5000);
-    return () => window.clearInterval(timer);
+    void refreshWorkspaceState();
+    const timer = window.setInterval(refreshWorkspaceState, WORKSPACE_TREE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [editorMode, activeChatId]);
 
   useEffect(() => {
@@ -388,10 +428,10 @@ export function AgentChat({
   }, [activeChatId, plans, selectedPlanId]);
 
   useEffect(() => {
-    if (activeChatId !== "new" && !chats.some((chat) => chat.id === activeChatId)) {
+    if (activeChatId !== "new" && !chatList.some((chat) => chat.id === activeChatId)) {
       setActiveChatId("new");
     }
-  }, [activeChatId, chats]);
+  }, [activeChatId, chatList]);
 
   useEffect(() => {
     const nextChatId = initialChatId || "new";
@@ -421,7 +461,13 @@ export function AgentChat({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not generate plan.");
       setValue("");
-      if (data.chat?.id) setActiveChatId(data.chat.id);
+      if (data.chat?.id) {
+        setChatList((current) => current.some((item) => item.id === data.chat.id)
+          ? current.map((item) => item.id === data.chat.id ? data.chat : item)
+          : [data.chat, ...current]);
+        window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
+        setActiveChatId(data.chat.id);
+      }
       if (data.plan?.id) setSelectedPlanId(data.plan.id);
       if (data.pane) setCodexPane(data.pane);
       flash(data.pane ? "Sent to Codex tmux pane" : data.plan ? "Plan generated and files written" : "Message sent");
@@ -459,7 +505,13 @@ export function AgentChat({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not execute Codex command.");
       setValue("");
-      if (data.chat?.id) setActiveChatId(data.chat.id);
+      if (data.chat?.id) {
+        setChatList((current) => current.some((item) => item.id === data.chat.id)
+          ? current.map((item) => item.id === data.chat.id ? data.chat : item)
+          : [data.chat, ...current]);
+        window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
+        setActiveChatId(data.chat.id);
+      }
       if (data.pane) setCodexPane(data.pane);
       if (data.chat?.id) router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
     } catch (error) {
@@ -708,11 +760,13 @@ export function AgentChat({
     }
   }
 
-  async function refreshGit() {
-    const response = await fetch("/api/git");
+  async function refreshGit(details = false) {
+    const response = await fetch(`/api/git${details ? "?details=1" : ""}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load Git status.");
     setGit(data.git);
+    if (data.history) setGitHistory(data.history);
+    if (data.stashes) setGitStashes(data.stashes);
     return data.git as GitWorkspaceStatus;
   }
 
@@ -728,24 +782,69 @@ export function AgentChat({
   async function openGit() {
     setGitOpen(true);
     try {
-      await refreshGit();
+      await refreshGit(true);
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
     }
   }
 
-  async function gitAction(action: "init" | "commit") {
+  async function openCommitPush() {
+    setCommitPushOpen(true);
+    try {
+      await refreshGit(true);
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function gitAction(action: string, body: Record<string, unknown> = {}, success = "Git action completed") {
     setGitLoading(true);
     try {
       const response = await fetch("/api/git", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, message: commitMessage })
+        body: JSON.stringify({ action, ...body })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Git action failed.");
       setGit(data.git);
-      flash(action === "init" ? "Git initialized" : "Workspace changes committed");
+      setGitHistory(data.history || []);
+      setGitStashes(data.stashes || []);
+      flash(success);
+      router.refresh();
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGitLoading(false);
+    }
+  }
+
+  async function commitAllAndPush() {
+    setGitLoading(true);
+    try {
+      const commitResponse = await fetch("/api/git", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "commit", message: commitMessage, mode: "all" })
+      });
+      const commitData = await commitResponse.json();
+      if (!commitResponse.ok) throw new Error(commitData.error || "Git commit failed.");
+      setGit(commitData.git);
+      setGitHistory(commitData.history || []);
+      setGitStashes(commitData.stashes || []);
+
+      const pushResponse = await fetch("/api/git", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "push" })
+      });
+      const pushData = await pushResponse.json();
+      if (!pushResponse.ok) throw new Error(pushData.error || "Git push failed.");
+      setGit(pushData.git);
+      setGitHistory(pushData.history || []);
+      setGitStashes(pushData.stashes || []);
+      flash("Committed and pushed");
+      setCommitPushOpen(false);
       router.refresh();
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
@@ -809,16 +908,16 @@ export function AgentChat({
             )}
           </div>
 
-          <div ref={scrollRef} className="thin-scrollbar flex-1 overflow-auto px-4 py-7 sm:px-8">
+          <div ref={scrollRef} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
             {editorMode ? (
-              <div className="mx-auto grid max-w-3xl gap-7">
-                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} />
+              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
                 {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
                 {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
                 {loading && !pendingStatus ? <ThinkingBubble /> : null}
               </div>
             ) : visibleMessages.length ? (
-              <div className="mx-auto grid max-w-3xl gap-7">
+              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
                 {visibleMessages.map((message) => (
                   <MessageBubble
                     key={message.id}
@@ -844,15 +943,13 @@ export function AgentChat({
                 applyDisabled={applyDisabled}
                 applyRuntimeEnabled={applyRuntimeEnabled}
                 onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
-                onChecks={() => setChecksOpen(true)}
                 onRuns={() => setRunsOpen(true)}
                 onVariables={openVariables}
                 onDiff={openDiff}
                 onGit={openGit}
-                onTestProvider={() => setCredentialsOpen(true)}
+                onCommitPush={openCommitPush}
                 onApprove={() => selectedPlan && void approve(selectedPlan)}
                 onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
-                onFiles={openFiles}
                 missingVariables={missingRequiredVariables.length}
               />
             </div>
@@ -981,15 +1078,44 @@ export function AgentChat({
         <DiffModal git={git} loading={gitLoading} onClose={() => setDiffOpen(false)} onRefresh={openDiff} />
       ) : null}
 
-      {gitOpen ? (
-        <GitModal
+      {commitPushOpen ? (
+        <CommitPushModal
           git={git}
           loading={gitLoading}
           commitMessage={commitMessage}
           onCommitMessageChange={setCommitMessage}
+          onClose={() => setCommitPushOpen(false)}
+          onInit={() => gitAction("init", {}, "Git initialized")}
+          onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
+          onPush={() => gitAction("push", {}, "Branch pushed")}
+          onCommitAndPush={commitAllAndPush}
+        />
+      ) : null}
+
+      {gitOpen ? (
+        <GitModal
+          git={git}
+          history={gitHistory}
+          stashes={gitStashes}
+          loading={gitLoading}
+          commitMessage={commitMessage}
+          stashMessage={stashMessage}
+          onCommitMessageChange={setCommitMessage}
+          onStashMessageChange={setStashMessage}
           onClose={() => setGitOpen(false)}
-          onInit={() => gitAction("init")}
-          onCommit={() => gitAction("commit")}
+          onInit={() => gitAction("init", {}, "Git initialized")}
+          onStage={(paths) => gitAction("stage", { paths }, paths.length ? "File staged" : "All changes staged")}
+          onUnstage={(paths) => gitAction("unstage", { paths }, paths.length ? "File unstaged" : "All changes unstaged")}
+          onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
+          onPush={() => gitAction("push", {}, "Branch pushed")}
+          onStash={(includeUntracked) => gitAction("stash", { message: stashMessage, includeUntracked }, "Changes stashed")}
+          onStashApply={(index, mode) => gitAction(mode === "pop" ? "stash-pop" : "stash-apply", { index }, mode === "pop" ? "Stash popped" : "Stash applied")}
+          onStashDrop={(index) => gitAction("stash-drop", { index, confirm: "DROP" }, "Stash dropped")}
+          onCheckout={(ref, options) => gitAction("checkout", { ref, ...options }, options?.createBranch ? "Branch created" : "Checked out ref")}
+          onRevert={(ref, options) => gitAction("revert", { ref, ...options }, "Commit reverted")}
+          onReset={(ref, options) => gitAction("reset", { ref, ...options }, "Repository reset")}
+          onResetAll={() => gitAction("reset-all", { confirm: "RESET" }, "All workspace changes reset")}
+          onDiscardFile={(path) => gitAction("discard-file", { path, confirm: "DISCARD" }, "File discarded")}
           onRefresh={openGit}
         />
       ) : null}
@@ -1594,15 +1720,13 @@ function TerraformActionBar({
   applyDisabled,
   applyRuntimeEnabled,
   onViewPlan,
-  onChecks,
   onRuns,
   onVariables,
   onDiff,
   onGit,
-  onTestProvider,
+  onCommitPush,
   onApprove,
   onSandbox,
-  onFiles,
   missingVariables
 }: {
   plan: InfraPlan | null;
@@ -1611,18 +1735,16 @@ function TerraformActionBar({
   applyDisabled: boolean;
   applyRuntimeEnabled: boolean;
   onViewPlan: () => void;
-  onChecks: () => void;
   onRuns: () => void;
   onVariables: () => void;
   onDiff: () => void;
   onGit: () => void;
-  onTestProvider: () => void;
+  onCommitPush: () => void;
   onApprove: () => void;
   onSandbox: (mode: SandboxMode) => void;
-  onFiles: () => void;
   missingVariables: number;
 }) {
-  const [openGroup, setOpenGroup] = useState<"terraform" | "git" | "controls" | null>(null);
+  const [openGroup, setOpenGroup] = useState<"terraform" | "git" | null>(null);
   const approved = Boolean(plan?.status.includes("approved"));
   const canMutate = approved && !applyDisabled && applyRuntimeEnabled;
   const disabled = loading || !plan;
@@ -1657,15 +1779,8 @@ function TerraformActionBar({
           {openGroup === "git" ? (
             <div className="grid gap-1">
               <ActionMenuButton icon="fa-code-branch" label="View diff" disabled={loading} onClick={() => run(onDiff)} />
+              <ActionMenuButton icon="fa-cloud-arrow-up" label="Commit & push" disabled={loading} onClick={() => run(onCommitPush)} />
               <ActionMenuButton icon="fa-code-commit" label="Git workspace" disabled={loading} onClick={() => run(onGit)} />
-            </div>
-          ) : null}
-
-          {openGroup === "controls" ? (
-            <div className="grid gap-1">
-              <ActionMenuButton icon="fa-folder-tree" label="Files" disabled={loading} onClick={() => run(onFiles)} />
-              <ActionMenuButton icon="fa-key" label="Credentials" disabled={loading} onClick={() => run(onTestProvider)} />
-              <ActionMenuButton icon="fa-shield-halved" label="Checks" disabled={loading || !root} onClick={() => run(onChecks)} />
             </div>
           ) : null}
         </div>
@@ -1676,7 +1791,6 @@ function TerraformActionBar({
       </div>
       <div className="flex items-center justify-end gap-1.5 rounded-full border border-gray-200 bg-[#fbfbf9] p-1">
         <GroupTrigger icon={<Icon name="fa-brands fa-git-alt" className="text-[13px] text-[#F05032]" />} label="Git" active={openGroup === "git"} onClick={() => setOpenGroup(openGroup === "git" ? null : "git")} />
-        <GroupTrigger label="Controls" active={openGroup === "controls"} onClick={() => setOpenGroup(openGroup === "controls" ? null : "controls")} />
       </div>
     </div>
   );
@@ -1909,7 +2023,15 @@ function slashCommandQuery(input: string) {
   return value;
 }
 
-function CodexTmuxHistory({ pane, fallbackMessages }: { pane: CodexTmuxPane | null; fallbackMessages: Message[] }) {
+function CodexTmuxHistory({
+  pane,
+  fallbackMessages,
+  onMessageAction
+}: {
+  pane: CodexTmuxPane | null;
+  fallbackMessages: Message[];
+  onMessageAction: (action: MessageAction) => void;
+}) {
   const parsedTurns = parseCodexPaneTurns(pane?.output || "");
   const turns = pane?.ready && parsedTurns.at(-1) && !parsedTurns.at(-1)?.response
     ? parsedTurns.slice(0, -1)
@@ -1920,8 +2042,22 @@ function CodexTmuxHistory({ pane, fallbackMessages }: { pane: CodexTmuxPane | nu
       return (
         <>
           {fallbackMessages.map((message) => (
-            <MessageBubble key={message.id} message={message} onAction={() => undefined} />
+            <MessageBubble key={message.id} message={message} onAction={onMessageAction} />
           ))}
+          <CodexStatusLine pane={pane} />
+        </>
+      );
+    }
+    if (pane?.running && !pane.ready) {
+      return (
+        <>
+          <article className="flex gap-4">
+            <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
+            <div className="flex items-center gap-2 py-2 text-sm text-gray-500">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+              {pane.viewingTranscript ? "Codex transcript is open." : pane.stagedInput ? "Submitting to Codex..." : "Codex is working..."}
+            </div>
+          </article>
           <CodexStatusLine pane={pane} />
         </>
       );
@@ -1935,36 +2071,76 @@ function CodexTmuxHistory({ pane, fallbackMessages }: { pane: CodexTmuxPane | nu
     );
   }
 
+  const usedTurnIndexes = new Set<number>();
+  const rendered: ReactNode[] = [];
+  fallbackMessages.forEach((message) => {
+    if (message.role === "user") {
+      const turnIndex = findUnusedCodexTurn(turns, usedTurnIndexes, message.content);
+      if (turnIndex >= 0) {
+        usedTurnIndexes.add(turnIndex);
+        rendered.push(
+          <CodexTurnBlock
+            key={`turn-${message.id}-${turnIndex}`}
+            turn={turns[turnIndex]}
+            pane={pane}
+          />
+        );
+      } else {
+        rendered.push(<MessageBubble key={message.id} message={message} onAction={onMessageAction} />);
+      }
+      return;
+    }
+    rendered.push(<MessageBubble key={message.id} message={message} onAction={onMessageAction} />);
+  });
+
+  turns.forEach((turn, index) => {
+    if (usedTurnIndexes.has(index)) return;
+    rendered.push(<CodexTurnBlock key={`unmatched-turn-${index}-${turn.prompt}`} turn={turn} pane={pane} />);
+  });
+
   return (
     <>
-      {turns.map((turn, index) => (
-        <div key={`${index}-${turn.prompt}`} className="grid gap-5">
-          <article className="flex justify-end">
-            <div className="max-w-[86%] rounded-[1.5rem] bg-gray-100 px-4 py-3">
-              <p className="whitespace-pre-wrap text-sm leading-7 text-gray-900">{turn.prompt}</p>
-            </div>
-          </article>
-          {turn.response ? (
-            <article className="flex gap-4">
-              <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
-              <div className="grid min-w-0 flex-1 gap-3 py-1">
-                {turn.actions.length ? <CodexActionTimeline actions={turn.actions} /> : null}
-                {turn.response ? <MarkdownMessage content={turn.response} /> : null}
-              </div>
-            </article>
-          ) : (
-            <article className="flex gap-4">
-              <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
-              <div className="flex items-center gap-2 py-2 text-sm text-gray-500">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-                {pane?.stagedInput ? "Submitting to Codex..." : "Codex is working..."}
-              </div>
-            </article>
-          )}
-        </div>
-      ))}
+      {rendered}
       <CodexStatusLine pane={pane} />
     </>
+  );
+}
+
+function findUnusedCodexTurn(turns: CodexPaneTurn[], used: Set<number>, prompt: string) {
+  const normalizedPrompt = normalizeCodexPrompt(prompt);
+  return turns.findIndex((turn, index) => !used.has(index) && normalizeCodexPrompt(turn.prompt) === normalizedPrompt);
+}
+
+function normalizeCodexPrompt(prompt: string) {
+  return prompt.replace(/\s+/g, " ").trim();
+}
+
+function CodexTurnBlock({ turn, pane }: { turn: CodexPaneTurn; pane: CodexTmuxPane | null }) {
+  return (
+    <div className="grid min-w-0 gap-5">
+      <article className="flex min-w-0 justify-end">
+        <div className="min-w-0 max-w-[86%] rounded-[1.5rem] bg-gray-100 px-4 py-3">
+          <p className="whitespace-pre-wrap text-sm leading-7 text-gray-900 [overflow-wrap:anywhere]">{turn.prompt}</p>
+        </div>
+      </article>
+      {turn.response ? (
+        <article className="flex min-w-0 gap-4">
+          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
+          <div className="grid min-w-0 max-w-full flex-1 gap-3 overflow-hidden py-1">
+            {turn.actions.length ? <CodexActionTimeline actions={turn.actions} /> : null}
+            {turn.response ? <MarkdownMessage content={turn.response} /> : null}
+          </div>
+        </article>
+      ) : (
+        <article className="flex min-w-0 gap-4">
+          <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">C</span>
+          <div className="flex items-center gap-2 py-2 text-sm text-gray-500">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+            {pane?.viewingTranscript ? "Codex transcript is open." : pane?.stagedInput ? "Submitting to Codex..." : "Codex is working..."}
+          </div>
+        </article>
+      )}
+    </div>
   );
 }
 
@@ -2051,11 +2227,22 @@ function codexPickerControlKey(key: string): CodexControlKey | null {
 }
 
 function CodexStatusLine({ pane }: { pane: CodexTmuxPane | null }) {
+  const label = pane?.ready
+    ? "Codex ready"
+    : pane?.viewingTranscript
+      ? "Codex transcript open"
+      : pane?.stagedInput
+        ? "Submitting to Codex"
+        : pane?.running
+          ? "Codex working"
+          : "Codex session not started";
+  const dot = pane?.ready ? "bg-emerald-500" : pane?.viewingTranscript ? "bg-blue-400" : pane?.running ? "bg-amber-500" : "bg-gray-300";
+
   return (
     <div className="flex justify-center">
       <div className="inline-flex items-center gap-2 rounded-full bg-gray-50 px-3 py-1.5 text-[11px] font-medium text-gray-400">
-        <span className={`h-1.5 w-1.5 rounded-full ${pane?.ready ? "bg-emerald-500" : pane?.running ? "bg-amber-500" : "bg-gray-300"}`} />
-        {pane?.ready ? "Codex ready" : pane?.stagedInput ? "Submitting to Codex" : pane?.running ? "Codex working" : "Codex session not started"}
+        <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+        {label}
       </div>
     </div>
   );
@@ -2187,21 +2374,78 @@ function findPickerTitle(lines: string[], firstChoiceIndex: number) {
 }
 
 function CodexActionTimeline({ actions }: { actions: CodexPaneAction[] }) {
+  const groups = codexActionGroups(actions);
+
   return (
-    <div className="grid gap-1.5">
-      {actions.map((action, index) => (
-        <div key={`${index}-${action.label}-${action.detail || ""}`} className="flex items-start gap-2 rounded-xl bg-gray-50 px-3 py-2 text-xs text-gray-500">
-          <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-gray-500 shadow-sm shadow-black/5">
-            <Icon name={codexActionIcon(action.kind)} />
-          </span>
-          <span className="min-w-0">
-            <span className="font-semibold text-gray-700">{action.label}</span>
-            {action.detail ? <span className="ml-1 break-words font-mono text-[11px] text-gray-500">{action.detail}</span> : null}
-          </span>
-        </div>
-      ))}
+    <div className="grid min-w-0 max-w-full gap-2 overflow-hidden">
+      {groups.map((group) => {
+        return (
+          <CodexActionGroupSection key={group.kind} kind={group.kind} actions={group.actions} />
+        );
+      })}
     </div>
   );
+}
+
+function CodexActionGroupSection({ kind, actions }: { kind: CodexPaneAction["kind"]; actions: CodexPaneAction[] }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [actions.length]);
+
+  return (
+    <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-gray-100 bg-gray-50">
+      <header className="flex h-9 items-center justify-between gap-2 border-b border-gray-100 bg-white/70 px-3">
+        <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-gray-700">
+          <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-gray-500 shadow-sm shadow-black/5">
+            <Icon name={codexActionIcon(kind)} />
+          </span>
+          {codexActionGroupLabel(kind)}
+        </span>
+        <span className="text-[11px] font-medium text-gray-400">{actions.length}</span>
+      </header>
+      <div ref={scrollRef} className="thin-scrollbar grid max-h-[7.9rem] gap-1 overflow-auto p-1.5">
+        {actions.map((action, index) => (
+          <CodexActionRow
+            key={`${kind}-${index}-${action.label}-${action.detail || ""}`}
+            action={action}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CodexActionRow({ action }: { action: CodexPaneAction }) {
+  return (
+    <div className="min-w-0 rounded-xl bg-white px-3 py-2 text-xs text-gray-500 shadow-sm shadow-black/[0.02]">
+      <span className="font-semibold text-gray-700">{action.label}</span>
+      {action.detail ? <span className="ml-1 break-all font-mono text-[11px] text-gray-500">{action.detail}</span> : null}
+    </div>
+  );
+}
+
+function codexActionGroups(actions: CodexPaneAction[]) {
+  const byKind = new Map<CodexPaneAction["kind"], CodexPaneAction[]>();
+  const order: CodexPaneAction["kind"][] = [];
+  for (const action of actions) {
+    if (!byKind.has(action.kind)) {
+      byKind.set(action.kind, []);
+      order.push(action.kind);
+    }
+    byKind.get(action.kind)!.push(action);
+  }
+  return order.map((kind) => ({ kind, actions: byKind.get(kind)! }));
+}
+
+function codexActionGroupLabel(kind: CodexPaneAction["kind"]) {
+  if (kind === "search") return "Search";
+  if (kind === "command") return "Terminal";
+  if (kind === "file") return "Files";
+  if (kind === "thinking") return "Reasoning";
+  return "Actions";
 }
 
 function codexActionIcon(kind: CodexPaneAction["kind"]) {
@@ -2253,7 +2497,14 @@ function shouldSkipCodexPaneLine(plain: string) {
 }
 
 function isCodexPromptPlaceholder(value: string) {
-  return /^(find and fix|write tests|explain|review|ask|message|type)/i.test(value) || value.includes("@filename");
+  const clean = value.trim().toLowerCase();
+  if (!clean) return true;
+  if (clean === "explain this codebase") return true;
+  if (clean === "review my changes") return true;
+  if (clean === "find and fix a bug") return true;
+  if (/^type\s+(a\s+)?message/.test(clean)) return true;
+  if (/^(ask|message)\s+codex\b/.test(clean)) return true;
+  return /^(find and fix|write tests|explain|review)\b/.test(clean) && clean.includes("@filename");
 }
 
 function MessageBubble({
@@ -2265,11 +2516,11 @@ function MessageBubble({
 }) {
   const user = message.role === "user";
   return (
-    <article className={`flex gap-4 ${user ? "justify-end" : "justify-start"}`}>
+    <article className={`flex min-w-0 gap-4 ${user ? "justify-end" : "justify-start"}`}>
       {!user ? (
         <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-black text-xs font-semibold text-white">A</span>
       ) : null}
-      <div className={`max-w-[86%] ${user ? "rounded-[1.5rem] bg-gray-100 px-4 py-3" : "py-1"}`}>
+      <div className={`min-w-0 max-w-[86%] ${user ? "rounded-[1.5rem] bg-gray-100 px-4 py-3" : "py-1"}`}>
         <MessageContent content={message.content} user={user} />
         {!user && message.actions?.length ? <MessageActions actions={message.actions} onAction={onAction} /> : null}
       </div>
@@ -2312,7 +2563,7 @@ function MessageContent({ content, user }: { content: string; user: boolean }) {
   const index = content.indexOf(marker);
   if (index === -1) {
     return (
-      <div className="rounded-[1.5rem] border border-gray-200 bg-[#fbfbf9] px-4 py-3">
+      <div className="min-w-0 max-w-full overflow-hidden rounded-[1.5rem] border border-gray-200 bg-[#fbfbf9] px-4 py-3">
         <MarkdownMessage content={content} />
       </div>
     );
@@ -2321,11 +2572,11 @@ function MessageContent({ content, user }: { content: string; user: boolean }) {
   const intro = content.slice(0, index);
   const output = content.slice(index + marker.length);
   return (
-    <div className="rounded-[1.5rem] border border-gray-200 bg-[#fbfbf9] px-4 py-3">
+    <div className="min-w-0 max-w-full overflow-hidden rounded-[1.5rem] border border-gray-200 bg-[#fbfbf9] px-4 py-3">
       <MarkdownMessage content={intro} />
       <details className="mt-4 rounded-[1.25rem] border border-gray-200 bg-[#fbfbf9] p-3" open={output.length < 1200}>
         <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Sandbox output</summary>
-        <pre className="thin-scrollbar mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[1rem] bg-black p-3 text-xs leading-6 text-gray-100">
+        <pre className="thin-scrollbar mt-3 max-h-80 max-w-full overflow-auto whitespace-pre-wrap rounded-[1rem] bg-black p-3 text-xs leading-6 text-gray-100">
           {output || "No output."}
         </pre>
       </details>
@@ -2565,7 +2816,7 @@ function DiffModal({
   );
 }
 
-function GitModal({
+function CommitPushModal({
   git,
   loading,
   commitMessage,
@@ -2573,7 +2824,8 @@ function GitModal({
   onClose,
   onInit,
   onCommit,
-  onRefresh
+  onPush,
+  onCommitAndPush
 }: {
   git: GitWorkspaceStatus;
   loading: boolean;
@@ -2581,17 +2833,26 @@ function GitModal({
   onCommitMessageChange: (value: string) => void;
   onClose: () => void;
   onInit: () => void;
-  onCommit: () => void;
-  onRefresh: () => void;
+  onCommit: (mode: "all" | "staged") => void;
+  onPush: () => void;
+  onCommitAndPush: () => void;
 }) {
+  const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
+  const changedCount = git.files.length;
+  const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0;
+  const canCommit = git.initialized && changedCount > 0;
+  const canCommitAndPush = canCommit && Boolean(git.remoteUrl);
+
   return (
-    <Modal title="Git workspace" description="Initialize Git, inspect working tree status, and commit reviewed Terraform changes." icon="fa-code-commit" size="xl" onClose={onClose}>
+    <Modal
+      title="Commit & push"
+      description="Checkpoint the current Terraform repository without opening the full Git workspace."
+      icon="fa-cloud-arrow-up"
+      size="xl"
+      onClose={onClose}
+    >
       <div className="mt-5 grid gap-4">
-        <div className="grid gap-3 rounded-[1.5rem] bg-[#f7f7f4] p-4 text-sm sm:grid-cols-3">
-          <MiniStat label="Git" value={!git.available ? "unavailable" : git.initialized ? "initialized" : "not initialized"} />
-          <MiniStat label="Branch" value={git.branch || "-"} />
-          <MiniStat label="Working tree" value={git.clean ? "clean" : `${git.files.length} changed`} />
-        </div>
+        <GitStatusStrip git={git} />
 
         {!git.initialized ? (
           <button type="button" onClick={onInit} disabled={loading || !git.available} className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-300">
@@ -2599,31 +2860,661 @@ function GitModal({
             Initialize Git repository
           </button>
         ) : (
-          <div className="grid gap-3 rounded-[1.5rem] border border-gray-200 p-4">
-            <label className="grid gap-2 text-sm font-medium text-gray-700">
-              Commit message
-              <input
-                value={commitMessage}
-                onChange={(event) => onCommitMessageChange(event.target.value)}
-                className="h-11 rounded-2xl border border-gray-200 px-4 outline-none transition focus:border-black"
-              />
-            </label>
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button type="button" onClick={onRefresh} disabled={loading} className="h-10 rounded-full border border-gray-200 px-4 text-sm font-semibold text-gray-700 transition hover:border-gray-300 disabled:text-gray-400">
-                Refresh
-              </button>
-              <button type="button" onClick={onCommit} disabled={loading || git.clean} className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-black px-4 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-300">
-                <Icon name={loading ? "fa-circle-notch fa-spin" : "fa-check"} />
-                Commit changes
-              </button>
-            </div>
-          </div>
-        )}
+          <>
+            <div className="grid gap-3 rounded-[1.5rem] border border-gray-200 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">Ready to checkpoint</h3>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {changedCount ? `${changedCount} changed file${changedCount === 1 ? "" : "s"}` : "No local changes"}
+                    {stagedCount ? ` · ${stagedCount} staged` : ""}
+                    {(git.ahead || 0) > 0 ? ` · ${git.ahead} commit${git.ahead === 1 ? "" : "s"} ahead` : ""}
+                  </p>
+                </div>
+                {!git.remoteUrl ? (
+                  <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">No remote</span>
+                ) : null}
+              </div>
 
-        <GitDiffContent git={git} compact />
+              <label className="grid gap-2 text-sm font-medium text-gray-700">
+                Commit message
+                <input
+                  value={commitMessage}
+                  onChange={(event) => onCommitMessageChange(event.target.value)}
+                  className="h-12 rounded-2xl border border-gray-200 bg-white px-4 outline-none transition focus:border-black"
+                />
+              </label>
+
+              <div className="flex flex-wrap justify-end gap-2">
+                <GitButton label="Commit staged" tooltip="Commit only staged files" icon="fa-check" primary disabled={loading || !stagedCount} onClick={() => onCommit("staged")} />
+                <GitButton label="Commit all" tooltip="Stage and commit all local changes" icon="fa-check-double" primary disabled={loading || !canCommit} onClick={() => onCommit("all")} />
+                <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip="Push committed changes to the remote branch" icon="fa-arrow-up" disabled={loading || !canPush} onClick={onPush} />
+                <GitButton label="Commit all & push" tooltip="Stage all changes, commit, then push" icon="fa-cloud-arrow-up" primary disabled={loading || !canCommitAndPush} onClick={onCommitAndPush} />
+              </div>
+            </div>
+
+            <div className="thin-scrollbar grid max-h-80 gap-2 overflow-auto rounded-[1.5rem] bg-gray-50 p-3">
+              {git.files.length ? git.files.map((file) => (
+                <div key={file.path} className="flex items-center gap-2 rounded-2xl bg-white px-3 py-2">
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-600">{file.status}</span>
+                  <span className="min-w-0 truncate font-mono text-xs font-semibold text-gray-800">{file.path}</span>
+                </div>
+              )) : (
+                <p className="rounded-2xl bg-white p-4 text-sm text-gray-600">No uncommitted workspace changes.</p>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );
+}
+
+function GitModal({
+  git,
+  history,
+  stashes,
+  loading,
+  commitMessage,
+  stashMessage,
+  onCommitMessageChange,
+  onStashMessageChange,
+  onClose,
+  onInit,
+  onStage,
+  onUnstage,
+  onCommit,
+  onPush,
+  onStash,
+  onStashApply,
+  onStashDrop,
+  onCheckout,
+  onRevert,
+  onReset,
+  onResetAll,
+  onDiscardFile,
+  onRefresh
+}: {
+  git: GitWorkspaceStatus;
+  history: GitCommit[];
+  stashes: GitStashEntry[];
+  loading: boolean;
+  commitMessage: string;
+  stashMessage: string;
+  onCommitMessageChange: (value: string) => void;
+  onStashMessageChange: (value: string) => void;
+  onClose: () => void;
+  onInit: () => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onCommit: (mode: "all" | "staged") => void;
+  onPush: () => void;
+  onStash: (includeUntracked: boolean) => void;
+  onStashApply: (index: number, mode: "apply" | "pop") => void;
+  onStashDrop: (index: number) => void;
+  onCheckout: (ref: string, options?: { stashBefore?: boolean; createBranch?: string }) => void;
+  onRevert: (ref: string, options?: { stashBefore?: boolean }) => void;
+  onReset: (ref: string, options: { confirm: string; stashBefore?: boolean }) => void;
+  onResetAll: () => void;
+  onDiscardFile: (path: string) => void;
+  onRefresh: () => void;
+}) {
+  const [includeUntracked, setIncludeUntracked] = useState(true);
+  const [pendingAction, setPendingAction] = useState<{ kind: "checkout" | "branch" | "revert" | "reset"; commit: GitCommit } | null>(null);
+  const [branchName, setBranchName] = useState("");
+  const [resetConfirm, setResetConfirm] = useState("");
+  const [stashBefore, setStashBefore] = useState(false);
+  const [dropConfirmIndex, setDropConfirmIndex] = useState<number | null>(null);
+  const [discardConfirmPath, setDiscardConfirmPath] = useState<string | null>(null);
+  const [resetAllConfirm, setResetAllConfirm] = useState("");
+  const [focusedGitPanel, setFocusedGitPanel] = useState<"history" | "changes" | "stashes" | null>(null);
+  const dirty = git.initialized && !git.clean;
+  const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
+  const unstagedCount = git.files.filter((file) => Boolean(file.worktreeStatus)).length;
+
+  function startHistoryAction(kind: "checkout" | "branch" | "revert" | "reset", commit: GitCommit) {
+    setPendingAction({ kind, commit });
+    setBranchName(`restore-${commit.shortHash}`);
+    setResetConfirm("");
+    setStashBefore(false);
+  }
+
+  function runPendingAction() {
+    if (!pendingAction) return;
+    const ref = pendingAction.commit.hash;
+    const options = dirty ? { stashBefore } : undefined;
+    if (pendingAction.kind === "checkout") onCheckout(ref, options);
+    if (pendingAction.kind === "branch") onCheckout(ref, { ...options, createBranch: branchName });
+    if (pendingAction.kind === "revert") onRevert(ref, options);
+    if (pendingAction.kind === "reset") onReset(ref, { confirm: resetConfirm, ...(dirty ? { stashBefore } : {}) });
+    setPendingAction(null);
+  }
+
+  return (
+    <Modal
+      title="Git workspace"
+      description="Review history, checkpoint changes, commit, push, stash, and recover safely."
+      icon="fa-brands fa-git-alt"
+      iconClassName="text-[34px] text-[#F05032]"
+      iconFrameClassName="grid h-12 w-12 shrink-0 place-items-center"
+      size="xl"
+      onClose={onClose}
+    >
+      <div className="mt-5 grid min-h-0 gap-4">
+        <GitStatusStrip git={git} />
+
+        {!git.initialized ? (
+          <button type="button" onClick={onInit} disabled={loading || !git.available} className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-300">
+            <Icon name={loading ? "fa-circle-notch fa-spin" : "fa-code-commit"} />
+            Initialize Git repository
+          </button>
+        ) : (
+          <div className={`grid min-h-0 gap-4 lg:h-[calc(100vh-280px)] ${focusedGitPanel ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(360px,0.92fr)_minmax(460px,1.08fr)]"}`}>
+            {focusedGitPanel === null || focusedGitPanel === "history" ? (
+            <section className="flex min-h-0 flex-col gap-3 rounded-[1.5rem] border border-gray-200 p-4 lg:h-full">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">History</h3>
+                  <p className="mt-1 text-xs text-gray-500">
+                    {git.head ? `HEAD ${git.head.shortHash}: ${git.head.subject}` : "No commits yet."}
+                    {(git.ahead || git.behind) ? ` · ahead ${git.ahead || 0}, behind ${git.behind || 0}` : ""}
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <GitPanelFocusButton focused={focusedGitPanel === "history"} onClick={() => setFocusedGitPanel(focusedGitPanel === "history" ? null : "history")} />
+                  <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip="Push committed changes to the remote branch" icon="fa-arrow-up" disabled={loading || !git.remoteUrl} onClick={onPush} />
+                </div>
+              </div>
+
+              {pendingAction ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-amber-950">{gitHistoryActionTitle(pendingAction.kind)}</p>
+                      <p className="mt-1 text-xs leading-5 text-amber-800">
+                        Target: <span className="font-mono">{pendingAction.commit.shortHash}</span> {pendingAction.commit.subject}
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => setPendingAction(null)} className="grid h-8 w-8 place-items-center rounded-lg text-amber-800 transition hover:bg-amber-100" aria-label="Cancel Git action">
+                      <Icon name="fa-xmark" />
+                    </button>
+                  </div>
+                  {dirty ? (
+                    <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-amber-900">
+                      <input type="checkbox" checked={stashBefore} onChange={(event) => setStashBefore(event.target.checked)} />
+                      Stash current working changes before continuing
+                    </label>
+                  ) : null}
+                  {pendingAction.kind === "branch" ? (
+                    <label className="mt-3 grid gap-2 text-xs font-semibold text-amber-900">
+                      New branch name
+                      <input value={branchName} onChange={(event) => setBranchName(event.target.value)} className="h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm text-black outline-none focus:border-amber-500" />
+                    </label>
+                  ) : null}
+                  {pendingAction.kind === "reset" ? (
+                    <label className="mt-3 grid gap-2 text-xs font-semibold text-amber-900">
+                      Type RESET to hard reset this repository
+                      <input value={resetConfirm} onChange={(event) => setResetConfirm(event.target.value)} className="h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm text-black outline-none focus:border-amber-500" />
+                    </label>
+                  ) : null}
+                  <div className="mt-4 flex flex-wrap justify-end gap-2">
+                    <GitButton label="Cancel" disabled={loading} onClick={() => setPendingAction(null)} />
+                    <GitButton
+                      label={pendingAction.kind === "reset" ? "Hard reset" : pendingAction.kind === "revert" ? "Revert" : pendingAction.kind === "branch" ? "Create branch" : "Checkout"}
+                      tooltip={pendingAction.kind === "reset" ? "Move this branch to the selected commit" : pendingAction.kind === "revert" ? "Create a new commit that undoes this commit" : pendingAction.kind === "branch" ? "Create a new branch at this commit" : "Check out this exact commit"}
+                      danger={pendingAction.kind === "reset"}
+                      primary={pendingAction.kind !== "reset"}
+                      disabled={loading || (dirty && !stashBefore) || (pendingAction.kind === "reset" && resetConfirm !== "RESET") || (pendingAction.kind === "branch" && !branchName.trim())}
+                      onClick={runPendingAction}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <GitHistoryTimeline
+                history={history}
+                currentHash={git.head?.hash || ""}
+                loading={loading}
+                onAction={startHistoryAction}
+              />
+            </section>
+            ) : null}
+
+            {focusedGitPanel !== "history" ? (
+            <div className={`grid min-h-0 gap-4 lg:h-full ${focusedGitPanel ? "" : "lg:grid-rows-[minmax(0,1fr)_minmax(0,0.72fr)]"}`}>
+              {focusedGitPanel === null || focusedGitPanel === "changes" ? (
+              <section className="flex min-h-0 flex-col gap-3 rounded-[1.5rem] border border-gray-200 p-4 lg:h-full">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">Current changes</h3>
+                    <p className="mt-1 text-xs text-gray-500">{stagedCount} staged, {unstagedCount} unstaged</p>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <GitPanelFocusButton focused={focusedGitPanel === "changes"} onClick={() => setFocusedGitPanel(focusedGitPanel === "changes" ? null : "changes")} />
+                    <GitButton label="Stage all" tooltip="Stage every changed file for the next commit" icon="fa-plus" disabled={loading || git.clean} onClick={() => onStage([])} />
+                    <GitButton label="Unstage all" tooltip="Move all staged files back to working changes" icon="fa-minus" disabled={loading || !stagedCount} onClick={() => onUnstage([])} />
+                    <GitButton label="Stash all" tooltip="Save every current change into a stash" icon="fa-box-archive" disabled={loading || git.clean} onClick={() => onStash(includeUntracked)} />
+                    <GitButton label="Reset all" tooltip="Discard every uncommitted workspace change" icon="fa-rotate-left" danger disabled={loading || git.clean} onClick={() => setResetAllConfirm("pending")} />
+                  </div>
+                </div>
+
+                {resetAllConfirm ? (
+                  <div className="rounded-2xl border border-red-100 bg-red-50 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-red-950">Reset all workspace changes?</p>
+                        <p className="mt-1 text-xs leading-5 text-red-800">This discards staged, unstaged, and untracked files in the repository.</p>
+                      </div>
+                      <button type="button" onClick={() => setResetAllConfirm("")} className="grid h-8 w-8 place-items-center rounded-lg text-red-800 transition hover:bg-red-100" aria-label="Cancel reset all">
+                        <Icon name="fa-xmark" />
+                      </button>
+                    </div>
+                    <label className="mt-3 grid gap-2 text-xs font-semibold text-red-900">
+                      Type RESET to continue
+                      <input
+                        value={resetAllConfirm === "pending" ? "" : resetAllConfirm}
+                        onChange={(event) => setResetAllConfirm(event.target.value)}
+                        className="h-10 rounded-xl border border-red-200 bg-white px-3 text-sm text-black outline-none focus:border-red-500"
+                      />
+                    </label>
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      <GitButton label="Cancel" disabled={loading} onClick={() => setResetAllConfirm("")} />
+                      <GitButton
+                        label="Reset all"
+                        tooltip="Discard all workspace changes"
+                        danger
+                        disabled={loading || resetAllConfirm !== "RESET"}
+                        onClick={() => { onResetAll(); setResetAllConfirm(""); }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-3 rounded-2xl bg-gray-50 p-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+                  <label className="grid gap-2 text-sm font-medium text-gray-700">
+                    Commit message
+                    <input
+                      value={commitMessage}
+                      onChange={(event) => onCommitMessageChange(event.target.value)}
+                      className="h-11 rounded-2xl border border-gray-200 bg-white px-4 outline-none transition focus:border-black"
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <GitButton label="Commit staged" tooltip="Commit only the staged files" icon="fa-check" primary disabled={loading || !stagedCount} onClick={() => onCommit("staged")} />
+                    <GitButton label="Commit all" tooltip="Stage and commit all current workspace changes" icon="fa-check-double" primary disabled={loading || git.clean} onClick={() => onCommit("all")} />
+                  </div>
+                </div>
+
+                <div className="thin-scrollbar grid min-h-0 flex-1 gap-2 overflow-auto pr-1">
+                  {git.files.length ? git.files.map((file) => (
+                    <div key={file.path} className="rounded-2xl bg-gray-50 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="min-w-0">
+                          <span className="mr-2 rounded-full bg-white px-2 py-0.5 font-mono text-xs text-gray-600">{file.status}</span>
+                          <span className="break-all font-mono text-xs font-semibold text-gray-800">{file.path}</span>
+                        </span>
+                        <span className="flex flex-wrap gap-1">
+                          <GitIconButton label="Stage file" tooltip="Stage this file" icon="fa-plus" disabled={loading} onClick={() => onStage([file.path])} />
+                          <GitIconButton label="Unstage file" tooltip="Remove this file from the staged set" icon="fa-minus" disabled={loading || !file.indexStatus || file.indexStatus === "?"} onClick={() => onUnstage([file.path])} />
+                          <GitIconButton label="Discard file" tooltip="Discard local changes in this file" icon="fa-trash" danger disabled={loading} onClick={() => setDiscardConfirmPath(file.path)} />
+                        </span>
+                      </div>
+                      {discardConfirmPath === file.path ? (
+                        <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-gray-200 pt-3">
+                          <span className="mr-auto text-xs text-gray-500">Discard local changes in this file?</span>
+                          <GitButton label="Cancel" disabled={loading} onClick={() => setDiscardConfirmPath(null)} />
+                          <GitButton label="Discard" danger disabled={loading} onClick={() => { onDiscardFile(file.path); setDiscardConfirmPath(null); }} />
+                        </div>
+                      ) : null}
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-semibold text-gray-500">Diff preview</summary>
+                        <pre className="thin-scrollbar mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-xl bg-black p-3 text-xs leading-5 text-gray-100">
+                          {file.diff || "No textual diff available."}
+                        </pre>
+                      </details>
+                    </div>
+                  )) : (
+                    <p className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-600">No uncommitted workspace changes.</p>
+                  )}
+                </div>
+              </section>
+              ) : null}
+
+              {focusedGitPanel === null || focusedGitPanel === "stashes" ? (
+              <section className="flex min-h-0 flex-col gap-3 rounded-[1.5rem] border border-gray-200 p-4 lg:h-full">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">Stashes</h3>
+                    <p className="mt-1 text-xs text-gray-500">{stashes.length ? `${stashes.length} saved checkpoint${stashes.length === 1 ? "" : "s"}` : "No saved checkpoints"}</p>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <GitPanelFocusButton focused={focusedGitPanel === "stashes"} onClick={() => setFocusedGitPanel(focusedGitPanel === "stashes" ? null : "stashes")} />
+                    <GitButton label="Stash changes" tooltip="Save current changes without committing them" icon="fa-box-archive" disabled={loading || git.clean} onClick={() => onStash(includeUntracked)} />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 rounded-2xl bg-gray-50 p-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+                  <label className="grid gap-2 text-sm font-medium text-gray-700">
+                    Stash message
+                    <input
+                      value={stashMessage}
+                      onChange={(event) => onStashMessageChange(event.target.value)}
+                      className="h-10 rounded-2xl border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-black"
+                    />
+                  </label>
+                  <label className="flex items-end gap-2 pb-2 text-xs font-medium text-gray-600">
+                    <input type="checkbox" checked={includeUntracked} onChange={(event) => setIncludeUntracked(event.target.checked)} />
+                    Include untracked
+                  </label>
+                </div>
+
+                <div className="thin-scrollbar grid min-h-0 flex-1 gap-2 overflow-auto pr-1">
+                  {stashes.length ? stashes.map((stash) => (
+                    <div key={stash.name} className="rounded-2xl bg-gray-50 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs font-semibold text-gray-800">{stash.name}</p>
+                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-600">{stash.message}</p>
+                          <p className="mt-1 text-[11px] text-gray-400">{stash.relativeTime}</p>
+                        </div>
+                        <span className="flex shrink-0 gap-1">
+                          <GitIconButton label="Apply stash" tooltip="Apply this stash and keep it saved" icon="fa-clone" disabled={loading} onClick={() => onStashApply(stash.index, "apply")} />
+                          <GitIconButton label="Pop stash" tooltip="Apply this stash and remove it" icon="fa-box-open" disabled={loading} onClick={() => onStashApply(stash.index, "pop")} />
+                          <GitIconButton label="Drop stash" tooltip="Delete this stash" icon="fa-trash" danger disabled={loading} onClick={() => setDropConfirmIndex(stash.index)} />
+                        </span>
+                      </div>
+                      {dropConfirmIndex === stash.index ? (
+                        <div className="mt-3 flex items-center justify-end gap-2 border-t border-gray-200 pt-3">
+                          <span className="mr-auto text-xs text-gray-500">Drop this stash?</span>
+                          <GitButton label="Cancel" disabled={loading} onClick={() => setDropConfirmIndex(null)} />
+                          <GitButton label="Drop" danger disabled={loading} onClick={() => { onStashDrop(stash.index); setDropConfirmIndex(null); }} />
+                        </div>
+                      ) : null}
+                    </div>
+                  )) : (
+                    <p className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-600">No stashes yet.</p>
+                  )}
+                </div>
+              </section>
+              ) : null}
+            </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function GitStatusStrip({ git }: { git: GitWorkspaceStatus }) {
+  const repository = git.repositoryName || "repository";
+  const branch = git.branch || "-";
+  const upstream = git.upstream || "no upstream";
+  const changes = git.clean ? "clean" : `${git.files.length} changed`;
+  const sync = (git.ahead || git.behind) ? `ahead ${git.ahead || 0} / behind ${git.behind || 0}` : "synced";
+  const repositoryUrl = gitRepositoryWebUrl(git.remoteUrl);
+
+  return (
+    <div className="flex min-h-10 flex-wrap items-center justify-between gap-3 rounded-2xl bg-[#f7f7f4] px-4 py-2 text-sm">
+      <div className="flex min-w-0 items-center gap-2">
+        <Icon name="fa-brands fa-git-alt" className="text-xl text-[#F05032]" />
+        {repositoryUrl ? (
+          <a
+            href={repositoryUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="min-w-0 truncate rounded-lg font-mono text-sm font-semibold text-gray-950 underline-offset-4 transition hover:text-[#F05032] hover:underline"
+            title={`Open ${repository} repository`}
+          >
+            {repository}:{branch}
+          </a>
+        ) : (
+          <span className="min-w-0 truncate font-mono text-sm font-semibold text-gray-950">{repository}:{branch}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-gray-500">
+        <span className="rounded-full bg-white px-2.5 py-1">upstream <span className="font-mono text-gray-800">{upstream}</span></span>
+        <span className={`rounded-full px-2.5 py-1 font-semibold ${git.clean ? "bg-white text-gray-500" : "bg-[#F05032]/10 text-[#F05032]"}`}>{changes}</span>
+        <span className="rounded-full bg-white px-2.5 py-1">{sync}</span>
+      </div>
+    </div>
+  );
+}
+
+function gitRepositoryWebUrl(remoteUrl?: string) {
+  const remote = String(remoteUrl || "").trim();
+  if (!remote) return "";
+  const normalized = remote.replace(/\.git$/, "");
+  if (/^https?:\/\//.test(normalized)) return normalized;
+
+  const azureScpLike = normalized.match(/^git@ssh\.dev\.azure\.com:v3\/([^/]+)\/([^/]+)\/(.+)$/);
+  if (azureScpLike) {
+    const [, org, project, repo] = azureScpLike;
+    return `https://dev.azure.com/${org}/${project}/_git/${repo}`;
+  }
+
+  const scpLike = normalized.match(/^git@([^:]+):(.+)$/);
+  if (scpLike) {
+    const [, host, path] = scpLike;
+    return `https://${host}/${path}`;
+  }
+
+  const sshUrl = normalized.match(/^ssh:\/\/(?:[^@]+@)?([^/:]+)(?::\d+)?\/(.+)$/);
+  if (sshUrl) {
+    const [, host, path] = sshUrl;
+    const azurePath = path.match(/^v3\/([^/]+)\/([^/]+)\/(.+)$/);
+    if (host === "ssh.dev.azure.com" && azurePath) {
+      const [, org, project, repo] = azurePath;
+      return `https://dev.azure.com/${org}/${project}/_git/${repo}`;
+    }
+    return `https://${host}/${path}`;
+  }
+
+  return "";
+}
+
+function GitHistoryTimeline({
+  history,
+  currentHash,
+  loading,
+  onAction
+}: {
+  history: GitCommit[];
+  currentHash: string;
+  loading: boolean;
+  onAction: (kind: "checkout" | "branch" | "revert" | "reset", commit: GitCommit) => void;
+}) {
+  if (!history.length) {
+    return <p className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-600">No Git history available.</p>;
+  }
+
+  return (
+    <div className="thin-scrollbar min-h-0 flex-1 overflow-auto pr-1">
+      <ol className="grid">
+        {history.map((commit, index) => (
+          <li key={commit.hash} className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-3">
+            <GitGraphRail commit={commit} index={index} total={history.length} current={commit.hash === currentHash} />
+            <article className={`mb-3 rounded-2xl border p-3 transition hover:border-gray-200 hover:bg-white ${
+              commit.hash === currentHash ? "border-[#F05032]/30 bg-[#F05032]/5 shadow-sm shadow-[#F05032]/10" : "border-gray-100 bg-gray-50/90"
+            }`}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-semibold text-gray-950">{commit.shortHash}</span>
+                    {commit.hash === currentHash ? <span className="rounded-full bg-[#F05032]/10 px-2 py-0.5 text-[11px] font-semibold text-[#F05032]">current HEAD</span> : null}
+                    {commit.parents.length > 1 ? <span className="rounded-full bg-gray-900 px-2 py-0.5 text-[11px] font-semibold text-white">merge</span> : null}
+                    {commit.parents.length === 0 ? <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-500">root</span> : null}
+                    {commit.refs.map((ref) => (
+                      <GitRefPill key={`${commit.hash}-${ref}`} refName={ref} />
+                    ))}
+                  </div>
+                  <p className="mt-2 break-words text-sm font-semibold leading-5 text-gray-800">{commit.subject}</p>
+                  <p className="mt-1 text-xs text-gray-500">{commit.authorName} · {commit.relativeTime}</p>
+                </div>
+                <span className="flex shrink-0 flex-wrap justify-end gap-1">
+                  <GitIconButton label="Checkout commit" tooltip="Inspect the repository at this commit" icon="fa-code-branch" disabled={loading} onClick={() => onAction("checkout", commit)} />
+                  <GitIconButton label="Create branch here" tooltip="Create a new branch from this commit" icon="fa-plus" disabled={loading} onClick={() => onAction("branch", commit)} />
+                  <GitIconButton label="Revert commit" tooltip="Create a revert commit for this change" icon="fa-rotate-left" disabled={loading} onClick={() => onAction("revert", commit)} />
+                  <GitIconButton label="Hard reset here" tooltip="Move the current branch back to this commit" icon="fa-triangle-exclamation" danger disabled={loading} onClick={() => onAction("reset", commit)} />
+                </span>
+              </div>
+            </article>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function GitGraphRail({ commit, index, total, current }: { commit: GitCommit; index: number; total: number; current: boolean }) {
+  const isMerge = commit.parents.length > 1;
+  const isRoot = commit.parents.length === 0;
+
+  return (
+    <div className="relative flex justify-center">
+      {index > 0 ? <span className="absolute top-0 h-5 w-px bg-gray-200" /> : null}
+      {index < total - 1 ? <span className="absolute bottom-0 top-5 w-px bg-gray-200" /> : null}
+      {isMerge ? (
+        <>
+          <span className="absolute left-1/2 top-5 h-px w-4 rounded-full bg-[#F05032]/50" />
+          <span className="absolute left-[0.55rem] top-3 h-4 w-px rounded-full bg-[#F05032]/50" />
+        </>
+      ) : null}
+      <span
+        className={`relative mt-3 grid h-4 w-4 place-items-center rounded-full border-2 bg-white ${
+          current
+            ? "border-[#F05032] shadow-[0_0_0_4px_rgba(240,80,50,0.10)]"
+            : isMerge
+              ? "border-gray-950"
+              : isRoot
+                ? "border-gray-300"
+                : "border-gray-400"
+        }`}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${current ? "bg-[#F05032]" : isMerge ? "bg-gray-950" : "bg-gray-400"}`} />
+      </span>
+    </div>
+  );
+}
+
+function GitRefPill({ refName }: { refName: string }) {
+  const label = refName.replace(/^HEAD ->\s*/, "");
+  const isTag = label.startsWith("tag:");
+  const isRemote = label.includes("/");
+  const tone = isTag
+    ? "bg-amber-50 text-amber-700"
+    : isRemote
+      ? "bg-sky-50 text-sky-700"
+      : "bg-white text-gray-500";
+
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone}`}>{label}</span>;
+}
+
+function GitPanelFocusButton({ focused, onClick }: { focused: boolean; onClick: () => void }) {
+  const label = focused ? "Show all Git panels" : "Focus this panel";
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        title={label}
+        className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 bg-white text-gray-500 transition hover:border-gray-300 hover:text-black"
+      >
+        <Icon name={focused ? "fa-compress" : "fa-expand"} />
+      </button>
+      <ButtonTooltip text={label} />
+    </span>
+  );
+}
+
+function GitButton({
+  label,
+  icon,
+  tooltip,
+  primary,
+  danger,
+  disabled,
+  onClick
+}: {
+  label: string;
+  icon?: string;
+  tooltip?: string;
+  primary?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  const tone = primary
+    ? "border-black bg-black text-white hover:bg-gray-800"
+    : danger
+      ? "border-red-700 bg-red-700 text-white hover:bg-red-800"
+      : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:text-black";
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={tooltip || label}
+        title={tooltip || label}
+        className={`inline-flex h-10 items-center justify-center gap-2 rounded-full border px-4 text-sm font-semibold transition disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-100 disabled:text-gray-400 ${tone}`}
+      >
+        {icon ? <Icon name={icon} /> : null}
+        {label}
+      </button>
+      <ButtonTooltip text={tooltip || label} />
+    </span>
+  );
+}
+
+function GitIconButton({
+  label,
+  icon,
+  tooltip,
+  danger,
+  disabled,
+  onClick
+}: {
+  label: string;
+  icon: string;
+  tooltip?: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`grid h-8 w-8 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-40 ${
+          danger ? "text-red-500 hover:bg-red-50 hover:text-red-700" : "text-gray-400 hover:bg-white hover:text-black"
+        }`}
+        aria-label={tooltip || label}
+        title={tooltip || label}
+      >
+        <Icon name={icon} />
+      </button>
+      <ButtonTooltip text={tooltip || label} />
+    </span>
+  );
+}
+
+function ButtonTooltip({ text }: { text: string }) {
+  return (
+    <span className="pointer-events-none absolute bottom-[calc(100%+0.5rem)] left-1/2 z-30 hidden max-w-64 -translate-x-1/2 whitespace-nowrap rounded-lg bg-gray-950 px-2.5 py-1.5 text-xs font-medium text-white shadow-xl shadow-black/15 group-hover:block group-focus-within:block">
+      {text}
+    </span>
+  );
+}
+
+function gitHistoryActionTitle(kind: "checkout" | "branch" | "revert" | "reset") {
+  if (kind === "checkout") return "Checkout this commit";
+  if (kind === "branch") return "Create a branch from this commit";
+  if (kind === "revert") return "Revert this commit";
+  return "Hard reset to this commit";
 }
 
 function GitDiffContent({ git, compact }: { git: GitWorkspaceStatus; compact?: boolean }) {

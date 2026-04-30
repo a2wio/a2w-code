@@ -241,7 +241,28 @@ export type TerraformRoot = {
 export type WorkspaceDiffFile = {
   path: string;
   status: string;
+  indexStatus?: string;
+  worktreeStatus?: string;
   diff: string;
+};
+
+export type GitCommit = {
+  hash: string;
+  shortHash: string;
+  parents: string[];
+  subject: string;
+  authorName: string;
+  authorEmail: string;
+  createdAt: string;
+  relativeTime: string;
+  refs: string[];
+};
+
+export type GitStashEntry = {
+  index: number;
+  name: string;
+  message: string;
+  relativeTime: string;
 };
 
 export type GitWorkspaceStatus = {
@@ -250,6 +271,10 @@ export type GitWorkspaceStatus = {
   repositoryName?: string;
   remoteUrl?: string;
   branch?: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+  head?: GitCommit;
   clean: boolean;
   files: WorkspaceDiffFile[];
   message?: string;
