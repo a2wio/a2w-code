@@ -40,11 +40,11 @@ In local development only, the app accepts `admin` / `password123` when no admin
 To use your Codex subscription, authenticate on the self-hosted machine and switch the backend:
 
 ```sh
-codex login
+codex login --device-auth
 A2W_AGENT_BACKEND=codex npm run dev
 ```
 
-During onboarding, A2W can start `codex login` inside tmux and show the device-code instructions in the browser. Authorize Codex with your ChatGPT/OpenAI account, then verify the login before continuing. Codex runs against `.data/workspaces/selfhost-workspace/repository` with workspace-write sandboxing. Terraform apply/destroy remains a separate A2W sandbox action.
+During onboarding, A2W starts `codex login --device-auth` inside tmux and renders the verification URL plus device code in the browser. Authorize Codex with your ChatGPT/OpenAI account, then verify the login before continuing. Codex runs against `.data/workspaces/selfhost-workspace/repository` with workspace-write sandboxing. Terraform apply/destroy remains a separate A2W sandbox action.
 
 Each A2W chat stores its own Codex thread id after the first Codex run, then uses `codex exec resume` for follow-up prompts. Inside chat, use `/model` to see the current model and suggested IDs, `/model gpt-5.3-codex-spark` for faster runs, or `/model default` to return to the Codex CLI default.
 

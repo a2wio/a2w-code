@@ -33,10 +33,10 @@ npm run sandbox:build
 Authenticate Codex through onboarding, or run it directly on the host:
 
 ```sh
-codex login
+codex login --device-auth
 ```
 
-The onboarding UI can start `codex login` inside tmux and show the device-code output from the same runtime that will later run chat.
+The onboarding UI can start `codex login --device-auth` inside tmux and render the verification URL plus device code from the same runtime that will later run chat.
 
 Build and start the UI:
 

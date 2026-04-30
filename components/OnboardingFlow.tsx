@@ -11,6 +11,7 @@ type Field = [string, string, string, ("text" | "password")?];
 type CodexStatus = "idle" | "checking" | "login" | "ready" | "missing";
 type GitSetupStatus = "idle" | "running" | "ready" | "failed";
 type CredentialTestResult = { status: string; label: string; detail: string };
+type CodexDeviceAuth = { verificationUrl?: string; userCode?: string };
 type ProviderMeta = {
   label: string;
   resource: string;
@@ -178,6 +179,7 @@ export function OnboardingFlow({
   const [details, setDetails] = useState<Record<string, string>>(() => initialDetails(initial));
   const [codexStatus, setCodexStatus] = useState<CodexStatus>("idle");
   const [codexOutput, setCodexOutput] = useState("");
+  const [codexDeviceAuth, setCodexDeviceAuth] = useState<CodexDeviceAuth | null>(null);
   const [codexLoginRunning, setCodexLoginRunning] = useState(false);
   const [codexModel, setCodexModel] = useState("");
   const [gitStatus, setGitStatus] = useState<GitWorkspaceStatus | null>(null);
@@ -217,6 +219,7 @@ export function OnboardingFlow({
         const data = await response.json();
         if (cancelled) return;
         setCodexOutput(data.output || "");
+        setCodexDeviceAuth(data.deviceAuth || null);
         setCodexLoginRunning(Boolean(data.running));
         if (data.authenticated) {
           setCodexStatus("ready");
@@ -300,6 +303,7 @@ export function OnboardingFlow({
       const response = await fetch("/api/codex/status");
       const data = await response.json();
       setCodexOutput(data.output || "");
+      setCodexDeviceAuth(data.deviceAuth || null);
       if (!response.ok) throw new Error(data.error || "Could not check Codex login.");
       if (!data.authenticated) {
         setCodexStatus("missing");
@@ -324,6 +328,7 @@ export function OnboardingFlow({
       const response = await fetch("/api/codex/login", { method: "POST" });
       const data = await response.json();
       setCodexOutput(data.output || "");
+      setCodexDeviceAuth(data.deviceAuth || null);
       setCodexLoginRunning(Boolean(data.running));
       if (!response.ok) throw new Error(data.error || "Could not start Codex login.");
       if (data.authenticated) {
@@ -345,6 +350,7 @@ export function OnboardingFlow({
       const response = await fetch("/api/codex/login", { method: "DELETE" });
       const data = await response.json();
       setCodexOutput(data.output || "");
+      setCodexDeviceAuth(data.deviceAuth || null);
       setCodexLoginRunning(false);
       if (!response.ok) throw new Error(data.error || "Could not stop Codex login.");
       setCodexStatus(data.authenticated ? "ready" : "idle");
@@ -847,7 +853,7 @@ export function OnboardingFlow({
                 </div>
 
                 <div className="mt-4 grid gap-2">
-                  <CommandLine command="codex login" />
+                  <CommandLine command="codex login --device-auth" />
                   <CommandLine command="codex login status" />
                 </div>
 
@@ -870,7 +876,7 @@ export function OnboardingFlow({
                 </label>
 
                 <p className="mt-4 text-sm leading-6 text-gray-600">
-                  Start the login session here. A2W opens <code className="rounded bg-gray-50 px-1.5 py-1">codex login</code> in tmux and shows the device-code instructions from the same runtime that will run chat.
+                  Start the login session here. A2W opens <code className="rounded bg-gray-50 px-1.5 py-1">codex login --device-auth</code> in tmux and turns the terminal output into a browser URL and device code.
                 </p>
 
                 <div className="mt-4 grid gap-2 sm:grid-cols-3">
@@ -903,10 +909,17 @@ export function OnboardingFlow({
                   </button>
                 </div>
 
+                {codexLoginRunning || codexDeviceAuth ? (
+                  <CodexDeviceAuthPanel deviceAuth={codexDeviceAuth} />
+                ) : null}
+
                 {codexOutput ? (
-                  <pre className="thin-scrollbar mt-4 max-h-44 overflow-auto whitespace-pre-wrap rounded-[1.25rem] bg-black p-3 text-xs leading-5 text-gray-100">
-                    {codexOutput}
-                  </pre>
+                  <details className="mt-4 rounded-[1.25rem] border border-gray-200 bg-gray-50 p-3">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Codex login transcript</summary>
+                    <pre className="thin-scrollbar mt-3 max-h-36 overflow-auto whitespace-pre-wrap rounded-[1rem] bg-black p-3 text-xs leading-5 text-gray-100">
+                      {codexOutput}
+                    </pre>
+                  </details>
                 ) : null}
 
                 {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
@@ -1847,6 +1860,69 @@ function InstructionPanel({ icon, title, items }: { icon: string; title: string;
             <span>{item}</span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function CodexDeviceAuthPanel({ deviceAuth }: { deviceAuth: CodexDeviceAuth | null }) {
+  const [copied, setCopied] = useState(false);
+  const verificationUrl = deviceAuth?.verificationUrl || "https://auth.openai.com/activate";
+  const userCode = deviceAuth?.userCode || "";
+
+  async function copyCode() {
+    if (!userCode) return;
+    try {
+      await navigator.clipboard.writeText(userCode);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-[1.5rem] border border-blue-100 bg-blue-50 p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-blue-600 text-sm text-white">
+          <Icon name={userCode ? "fa-key" : "fa-circle-notch fa-spin"} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-blue-950">Device authorization</p>
+          <p className="mt-1 text-sm leading-6 text-blue-900/75">
+            Open the verification page, enter the code, then return here and check the Codex status.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_14rem]">
+        <a
+          href={verificationUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-11 min-w-0 items-center justify-between gap-3 rounded-2xl bg-white px-4 text-sm font-semibold text-blue-800 shadow-sm shadow-blue-950/5 transition hover:text-blue-950"
+        >
+          <span className="truncate">{verificationUrl}</span>
+          <Icon name="fa-arrow-up-right-from-square" />
+        </a>
+        <div className="flex min-w-0 gap-2">
+          <input
+            value={userCode}
+            readOnly
+            onFocus={(event) => event.currentTarget.select()}
+            placeholder="Waiting for code..."
+            className="h-11 min-w-0 flex-1 rounded-2xl border border-blue-100 bg-white px-4 font-mono text-sm font-semibold tracking-[0.08em] text-blue-950 outline-none"
+          />
+          <button
+            type="button"
+            onClick={copyCode}
+            disabled={!userCode}
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-200"
+            title="Copy device code"
+          >
+            <Icon name={copied ? "fa-check" : "fa-copy"} />
+          </button>
+        </div>
       </div>
     </div>
   );
