@@ -84,7 +84,10 @@ A2W_SANDBOX_BACKEND=kubernetes
 A2W_SANDBOX_IMAGE=registry.example.com/a2w/infra-sandbox:v0.0.1
 A2W_K8S_NAMESPACE=a2w-codex-terraform
 A2W_K8S_DATA_PVC=a2w-codex-terraform-data
+A2W_CODEX_BYPASS_SANDBOX=true
 ```
+
+`A2W_CODEX_BYPASS_SANDBOX=true` is required in restricted Kubernetes pods where Codex's internal Linux sandbox cannot initialize. The pod, namespace RBAC, mounted PVCs, and separate Terraform Job sandbox are the external isolation boundary.
 
 ## Release Check
 

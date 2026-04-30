@@ -31,6 +31,7 @@ Important variables:
 - `A2W_ENCRYPTION_KEY` encrypts provider secrets at rest.
 - `A2W_AGENT_BACKEND=codex` enables the Codex CLI for chat-driven workspace edits. The release image includes the Codex CLI; host-first installs need `codex` on `PATH`.
 - `A2W_CODEX_MODEL` sets an instance default model for `codex exec`. Settings or `/model <model-id>` can override it per workspace.
+- `A2W_CODEX_BYPASS_SANDBOX=true` disables Codex's internal command sandbox for externally sandboxed deployments such as Kubernetes pods. Keep it `false` for local host-first use.
 - `A2W_ENABLE_TERRAFORM_APPLY=true` allows apply/destroy routes to run after explicit UI approval.
 - `A2W_SANDBOX_BACKEND=podman` runs Terraform through local Podman. Use `kubernetes` when the app runs in-cluster.
 - `A2W_SANDBOX_IMAGE` is the Terraform runner image for either backend.

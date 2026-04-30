@@ -95,6 +95,7 @@ async function execCodex({
         "resume",
         "--json",
         "--skip-git-repo-check",
+        ...codexSandboxArgs(),
         "--output-last-message",
         finalMessagePath
       ]
@@ -104,8 +105,7 @@ async function execCodex({
         "--cd",
         repoRoot,
         "--skip-git-repo-check",
-        "--sandbox",
-        "workspace-write",
+        ...codexSandboxArgs(),
         "--color",
         "never",
         "--output-last-message",
@@ -117,6 +117,11 @@ async function execCodex({
   args.push(prompt);
 
   return execCodexCommand(args, repoRoot, Number(process.env.A2W_CODEX_TIMEOUT_MS || 180000));
+}
+
+function codexSandboxArgs() {
+  if (process.env.A2W_CODEX_BYPASS_SANDBOX === "true") return ["--dangerously-bypass-approvals-and-sandbox"];
+  return ["--sandbox", process.env.A2W_CODEX_SANDBOX || "workspace-write"];
 }
 
 function execCodexCommand(args: string[], cwd: string, timeoutMs: number) {

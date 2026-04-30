@@ -100,12 +100,13 @@ async function startCodexTmuxSession(input: CodexTmuxInput, sessionName: string)
     "codex",
     "--no-alt-screen",
     "--cd",
-    repoRoot,
-    "--sandbox",
-    "workspace-write",
-    "--ask-for-approval",
-    "never"
+    repoRoot
   ];
+  if (codexBypassSandbox()) {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  } else {
+    args.push("--sandbox", process.env.A2W_CODEX_SANDBOX || "workspace-write", "--ask-for-approval", "never");
+  }
   const model = input.workspace.codexModel || process.env.A2W_CODEX_MODEL;
   if (model) args.push("--model", model);
 
@@ -154,6 +155,10 @@ function codexTmuxControlKey(key: CodexTmuxControlKey) {
   if (key === "down") return "Down";
   if (key === "escape") return "Escape";
   return "Enter";
+}
+
+function codexBypassSandbox() {
+  return process.env.A2W_CODEX_BYPASS_SANDBOX === "true";
 }
 
 async function waitForCodexPrompt(target: string) {
