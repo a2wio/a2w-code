@@ -1,165 +1,138 @@
 # A2W Infra Agent Console
 
-A2W is a self-hostable Next.js console for DevOps and platform engineers. It gives a local operator a ChatGPT-style infrastructure agent, onboarding for AWS/Azure trust setup, a native project file browser, and sandboxed Terraform workflows.
+Self-hosted infrastructure editor for platform engineers. A2W combines a Codex-backed chat, a Terraform repository browser, Git controls, and gated sandbox actions for `fmt`, `plan`, `apply`, and `destroy`.
 
-The current MVP is intentionally single-instance and single-admin. There is no public registration flow, no SaaS tenant model, and no hosted credential custody. Cloud credentials are stored in local `.data/db.json`, encrypted with the instance secret, and injected only into sandbox runs.
+The MVP is single-admin and single-instance. Credentials are stored locally in `.data/db.json`, encrypted with the instance secret, and injected only into sandbox runs.
 
 ## Stack
 
-- Next.js App Router
-- TypeScript
-- Tailwind CSS
-- Instance username/password auth with signed HTTP-only cookies
-- Local JSON persistence in `.data/db.json`
-- Workspace repository files in `.data/workspaces/selfhost-workspace/repository`
-- Local Codex CLI backend through the operator's `codex login`
-- Podman or Kubernetes Job sandbox execution for `terraform fmt`, `plan`, `apply`, and `destroy`
+- Next.js, React, TypeScript, Tailwind CSS
+- Local JSON state in `.data/`
+- Codex CLI for chat-driven repository edits
+- Terraform sandbox via local Podman or Kubernetes Jobs
+- DStack-style Terraform layout:
+  - modules: `infrastructure/terraform/modules/<provider>/<module>`
+  - roots: `infrastructure/terraform/providers/<provider>/<region>/<stack>`
 
-## Configure
-
-Copy `.env.example` to `.env.local` and change the secrets before exposing the UI beyond localhost.
+## Local Run
 
 ```sh
 cp .env.example .env.local
-```
-
-Important variables:
-
-- `A2W_ADMIN_USERNAME` and `A2W_ADMIN_PASSWORD` control the only login.
-- `A2W_WORKSPACE_NAME` is used for the local workspace and generated "hello" function.
-- `AUTH_SECRET` signs browser sessions.
-- `A2W_ENCRYPTION_KEY` encrypts provider secrets at rest.
-- `A2W_AGENT_BACKEND=codex` enables the Codex CLI for chat-driven workspace edits. The release image includes the Codex CLI; host-first installs need `codex` on `PATH`.
-- `A2W_CODEX_MODEL` sets an instance default model for `codex exec`. Settings or `/model <model-id>` can override it per workspace.
-- `A2W_CODEX_BYPASS_SANDBOX=true` disables Codex's internal command sandbox for externally sandboxed deployments such as Kubernetes pods. Keep it `false` for local host-first use.
-- `A2W_ENABLE_TERRAFORM_APPLY=true` allows apply/destroy routes to run after explicit UI approval.
-- `A2W_SANDBOX_BACKEND=podman` runs Terraform through local Podman. Use `kubernetes` when the app runs in-cluster.
-- `A2W_SANDBOX_IMAGE` is the Terraform runner image for either backend.
-
-In local development only, the app accepts `admin` / `password123` when no admin env vars are set. Production requires `A2W_ADMIN_PASSWORD`.
-
-To use your Codex subscription, authenticate on the self-hosted machine and switch the backend:
-
-```sh
-codex login --device-auth
-A2W_AGENT_BACKEND=codex npm run dev
-```
-
-During onboarding, A2W starts `codex login --device-auth` inside tmux and renders the verification URL plus device code in the browser. Authorize Codex with your ChatGPT/OpenAI account, then verify the login before continuing. Codex runs against `.data/workspaces/selfhost-workspace/repository` with workspace-write sandboxing. Terraform apply/destroy remains a separate A2W sandbox action.
-
-Each A2W chat stores its own Codex thread id after the first Codex run, then uses `codex exec resume` for follow-up prompts. Inside chat, use `/model` to see the current model and suggested IDs, `/model gpt-5.3-codex-spark` for faster runs, or `/model default` to return to the Codex CLI default.
-
-Terraform follows a DStack-style repository layout:
-
-- Reusable implementation lives in `infrastructure/terraform/modules/<provider>/<module>`.
-- Deployable call directories live in `infrastructure/terraform/providers/<provider>/<region>/<stack>`.
-- Provider call directories initialize Terraform/providers, set concrete locals, call modules, and expose module outputs.
-- Terraform state is per provider call directory. Chats are conversations over the same workspace files; they do not own Terraform state.
-
-## Run
-
-```sh
 npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+Open:
 
-For a built self-hosted instance:
+```text
+http://127.0.0.1:5173
+```
+
+For production-style local run:
 
 ```sh
 npm run build
 npm start
 ```
 
-The bundled scripts bind to `127.0.0.1:5173` by default. Put a private reverse proxy in front of it if you expose it beyond the local machine.
+## Required Env
 
-## Routes
+Set strong values before exposing the app:
 
-- `/` console entrypoint. Operators are redirected to sign-in, onboarding, or chat.
-- `/auth` instance admin sign-in.
-- `/onboarding` first-run cloud setup, Codex login verification, and first resource creation.
-- `/dashboard/agent` chat-first infra agent with plan, files, fmt, plan, apply, and destroy modals.
-- `/dashboard/files` local workspace file browser.
-- `/dashboard/settings` cloud credentials, apply policy, and sign out.
+```sh
+A2W_ADMIN_USERNAME=admin
+A2W_ADMIN_PASSWORD=change-me
+AUTH_SECRET=replace-me
+A2W_ENCRYPTION_KEY=replace-me
+A2W_AGENT_BACKEND=codex
+A2W_ENABLE_TERRAFORM_APPLY=false
+```
 
-Older dashboard routes redirect into the reduced chat/files/settings surface.
+Codex auth is handled during onboarding with:
 
-## Sandbox Backends
+```sh
+codex login --device-auth
+```
 
-For local development, the app expects a local Podman image named `a2w-infra-sandbox:latest`.
+For Kubernetes deployments where Codex's internal Linux sandbox cannot run:
+
+```sh
+A2W_CODEX_BYPASS_SANDBOX=true
+```
+
+Keep that disabled for local host-first use.
+
+## Terraform Sandbox
+
+Local Podman:
 
 ```sh
 podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox
+A2W_SANDBOX_BACKEND=podman
+A2W_SANDBOX_IMAGE=a2w-infra-sandbox:latest
 ```
 
-For Kubernetes deployment, set:
+Kubernetes:
 
 ```sh
 A2W_SANDBOX_BACKEND=kubernetes
 A2W_SANDBOX_IMAGE=registry.k6nis.dev/a2w/infra-sandbox:v0.0.1
 A2W_K8S_NAMESPACE=a2w-codex-terraform
 A2W_K8S_DATA_PVC=a2w-codex-terraform-data
+A2W_CODEX_BYPASS_SANDBOX=true
 ```
 
-In Kubernetes mode, each sandbox run creates a short-lived Job in the app namespace, mounts the shared `.data` PVC to the selected workspace repository, injects credentials through a short-lived Secret, captures pod logs, and cleans up the Job/Secret/ConfigMap after completion. Offline runs also create a temporary deny-egress NetworkPolicy when the cluster CNI supports NetworkPolicy.
+In Kubernetes mode, A2W creates short-lived Jobs, mounts the workspace PVC, injects credentials through temporary Secrets, captures logs, and cleans up the run resources.
 
-Validation and `terraform fmt` can run without cloud credentials. Terraform `plan`, `apply`, and `destroy` need network-enabled sandbox runs and valid provider credentials from onboarding/settings.
+## Build Images
 
-The sandbox discovers Terraform call directories below `infrastructure/terraform/providers` and runs each one independently. It does not run Terraform from the repository root or from reusable module directories.
+GitHub Actions workflow:
 
-## Manual Test
+```text
+.github/workflows/container-images.yml
+```
 
-1. Start the app and open `/auth`.
-2. Sign in with the configured instance admin credentials.
-3. Complete onboarding: choose AWS or Azure, follow the provider trust instructions, and enter credentials.
-4. Start the Codex login session in onboarding, authorize the device code, and verify Codex.
-5. Land in `/dashboard/agent`.
-6. Open the generated files modal or `/dashboard/files`.
-7. Run `terraform fmt`, then `terraform plan`.
-8. Approve the plan in chat.
-9. Enable `A2W_ENABLE_TERRAFORM_APPLY=true` and allow apply/destroy in Settings before running cloud-changing actions.
+Required repository secrets:
 
-## Test And Build
+```text
+A2W_REGISTRY_USERNAME
+A2W_REGISTRY_PASSWORD
+```
+
+Images pushed:
+
+```text
+registry.k6nis.dev/a2w/codex-terraform:v0.0.1
+registry.k6nis.dev/a2w/infra-sandbox:v0.0.1
+```
+
+Local equivalent:
+
+```sh
+podman build --platform linux/amd64 -t registry.k6nis.dev/a2w/codex-terraform:v0.0.1 -f Dockerfile .
+podman build --platform linux/amd64 -t registry.k6nis.dev/a2w/infra-sandbox:v0.0.1 -f sandbox/Containerfile sandbox
+```
+
+## Checks
 
 ```sh
 npm test
 npm run build
 ```
 
-## Release Packaging
-
-Release artifacts for v0.0.1 are included:
-
-- `Dockerfile` builds the self-hosted web app image with Codex, Git, tmux, and Podman tooling included.
-- `Containerfile` mirrors the app image for Podman users who prefer that filename.
-- `compose.yaml` runs the app container with `.data`, Codex auth, and the host Podman socket mounted.
-- `sandbox/Containerfile` builds the isolated Terraform runner image.
-- `scripts/release-check.sh` runs tests, production build, and sandbox image build when Podman is available.
-- `scripts/package-release.sh` creates a distributable source archive in `dist/`.
-- `docs/release.md` documents host-first and containerized deployment.
-
-Run the release check:
+Release helper:
 
 ```sh
 npm run release:check
 ```
 
-For CI without Podman image builds:
+## Safety
 
-```sh
-A2W_RELEASE_SKIP_SANDBOX=1 npm run release:check
-```
+Terraform apply and destroy require:
 
-Create the release archive:
+- server env: `A2W_ENABLE_TERRAFORM_APPLY=true`
+- workspace setting enabled
+- explicit UI approval
+- typed confirmation
 
-```sh
-npm run release:archive
-```
-
-## Safety Notes
-
-Terraform apply and destroy are gated twice: by the local server env var and by the workspace policy in Settings. The UI also requires an explicit typed confirmation before mutation.
-
-This is still an MVP. Run it on a trusted machine or private network, use least-privilege cloud credentials where possible, and treat `.data/` as sensitive because it contains workspace state and encrypted provider secrets.
-# terraform-codex
+Treat `.data/` as sensitive. It contains app state, workspace files, and encrypted provider credentials.
