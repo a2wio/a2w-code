@@ -54,7 +54,9 @@ Open `http://127.0.0.1:5173`.
 
 ## Container Image
 
-The app image includes the Next.js server, Codex CLI, Terraform CLI, Git, SSH client, tmux, and Podman tooling. It is useful for a Linux self-host where the app container can reach the host Podman socket. The app still executes gated Terraform actions through the separate `a2w-infra-sandbox:latest` image.
+The app image includes the Next.js server, Codex CLI, Terraform CLI, Git, SSH client, tmux, ripgrep, jq, and basic Linux/network debugging tools. It also includes Podman tooling for host-first deployments where the app container can reach the host Podman socket. The app still executes gated Terraform actions through the separate `a2w-infra-sandbox:latest` image.
+
+The image is intentionally immutable. Do not grant Codex root package-install permissions in the app pod; add missing tools to the image and rebuild instead.
 
 ```sh
 cd apps/web
