@@ -171,6 +171,17 @@ const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
 const WORKSPACE_TREE_POLL_INTERVAL_MS = 5000;
 const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
 const CHAT_DELETE_EVENT = "a2w:chat-delete";
+const CHAT_BOTTOM_THRESHOLD_PX = 140;
+
+function scrollChatToBottom(element: HTMLDivElement | null) {
+  if (!element) return;
+  element.scrollTop = element.scrollHeight;
+}
+
+function isNearScrollBottom(element: HTMLDivElement | null) {
+  if (!element) return true;
+  return element.scrollHeight - element.scrollTop - element.clientHeight < CHAT_BOTTOM_THRESHOLD_PX;
+}
 
 export function AgentChat({
   chats,
@@ -244,6 +255,7 @@ export function AgentChat({
   const [mode, setMode] = useState<SandboxMode>("terraform-fmt");
   const [applyConfirm, setApplyConfirm] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const codexPickerKeyRequest = useRef(0);
   const editorMode = activeChatId !== "new";
   const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready && !codexPane.viewingTranscript && !codexPane.stagedInput);
@@ -327,11 +339,16 @@ export function AgentChat({
   }, [providerConnection]);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    });
+    shouldAutoScrollRef.current = true;
+    const frame = window.requestAnimationFrame(() => scrollChatToBottom(scrollRef.current));
     return () => window.cancelAnimationFrame(frame);
-  }, [visibleMessages.length, pendingStatus, activeApprovalStatusPlan?.id, activeChatId, codexPane?.output]);
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+    const frame = window.requestAnimationFrame(() => scrollChatToBottom(scrollRef.current));
+    return () => window.cancelAnimationFrame(frame);
+  }, [visibleMessages.length, pendingStatus, activeApprovalStatusPlan?.id, codexPane?.output]);
 
   useEffect(() => {
     setSlashIndex(0);
@@ -885,6 +902,10 @@ export function AgentChat({
     }
   }
 
+  function handleChatScroll() {
+    shouldAutoScrollRef.current = isNearScrollBottom(scrollRef.current);
+  }
+
   return (
     <>
       <section className="motion-enter relative flex h-full w-full overflow-hidden bg-white">
@@ -908,7 +929,7 @@ export function AgentChat({
             )}
           </div>
 
-          <div ref={scrollRef} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
+          <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
             {editorMode ? (
               <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
                 <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
