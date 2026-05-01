@@ -4,11 +4,13 @@ import {
   applyStash,
   checkoutGitRef,
   commitWorkspace,
+  createBranchFromHead,
   discardWorkspaceFile,
   dropStash,
   getGitDetails,
   getGitStatus,
   initializeGit,
+  mergeCurrentBranch,
   pushWorkspace,
   resetWorkspaceChanges,
   resetToCommit,
@@ -66,6 +68,17 @@ export async function POST(request: NextRequest) {
 
     if (action === "push") {
       return json(await pushWorkspace(context.workspace.id));
+    }
+
+    if (action === "branch-current") {
+      return json(await createBranchFromHead(context.workspace.id, String(body.branch || "")));
+    }
+
+    if (action === "merge-current") {
+      return json(await mergeCurrentBranch(context.workspace.id, {
+        targetBranch: String(body.targetBranch || ""),
+        push: Boolean(body.push)
+      }));
     }
 
     if (action === "stash") {

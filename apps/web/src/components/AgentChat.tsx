@@ -253,6 +253,7 @@ export function AgentChat({
   const [diffOpen, setDiffOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [commitPushOpen, setCommitPushOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
@@ -865,6 +866,15 @@ export function AgentChat({
     }
   }
 
+  async function openMerge() {
+    setMergeOpen(true);
+    try {
+      await refreshGit(true);
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function gitAction(action: string, body: Record<string, unknown> = {}, success = "Git action completed") {
     setGitLoading(true);
     try {
@@ -880,8 +890,10 @@ export function AgentChat({
       setGitStashes(data.stashes || []);
       flash(success);
       router.refresh();
+      return true;
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setGitLoading(false);
     }
@@ -970,7 +982,7 @@ export function AgentChat({
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {focusModeActive ? null : (
-            <div className="flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
+            <div className="relative flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
                 {activeChatId !== "new" && selectedRoot ? (
                   <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
@@ -981,7 +993,11 @@ export function AgentChat({
                   </div>
                 )}
               </div>
-              {editorMode ? <ChatDisplayModeToggle mode={displayMode} onChange={setDisplayMode} /> : null}
+              {editorMode ? (
+                <div className="absolute left-1/2 -translate-x-1/2">
+                  <ChatDisplayModeToggle mode={displayMode} onChange={setDisplayMode} />
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -1011,9 +1027,11 @@ export function AgentChat({
                   onDiff={openDiff}
                   onGit={openGit}
                   onCommitPush={openCommitPush}
+                  onMerge={openMerge}
                   onApprove={() => selectedPlan && void approve(selectedPlan)}
                   onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
                   missingVariables={missingRequiredVariables.length}
+                  canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
                   placement="focus"
                 />
               </div>
@@ -1061,9 +1079,11 @@ export function AgentChat({
                   onDiff={openDiff}
                   onGit={openGit}
                   onCommitPush={openCommitPush}
+                  onMerge={openMerge}
                   onApprove={() => selectedPlan && void approve(selectedPlan)}
                   onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
                   missingVariables={missingRequiredVariables.length}
+                  canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
                 />
               </div>
             ) : null}
@@ -1203,6 +1223,18 @@ export function AgentChat({
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
           onCommitAndPush={commitAllAndPush}
+          onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
+        />
+      ) : null}
+
+      {mergeOpen ? (
+        <MergeBranchModal
+          git={git}
+          loading={gitLoading}
+          onClose={() => setMergeOpen(false)}
+          onMerge={async (targetBranch, push) => {
+            if (await gitAction("merge-current", { targetBranch, push }, "Branch merged")) setMergeOpen(false);
+          }}
         />
       ) : null}
 
@@ -1222,6 +1254,7 @@ export function AgentChat({
           onUnstage={(paths) => gitAction("unstage", { paths }, paths.length ? "File unstaged" : "All changes unstaged")}
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
+          onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
           onStash={(includeUntracked) => gitAction("stash", { message: stashMessage, includeUntracked }, "Changes stashed")}
           onStashApply={(index, mode) => gitAction(mode === "pop" ? "stash-pop" : "stash-apply", { index }, mode === "pop" ? "Stash popped" : "Stash applied")}
           onStashDrop={(index) => gitAction("stash-drop", { index, confirm: "DROP" }, "Stash dropped")}
@@ -1290,12 +1323,12 @@ function ChatDisplayModeToggle({ mode, onChange }: { mode: ChatDisplayMode; onCh
           ? "border-black bg-black text-white hover:bg-gray-800"
           : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-black"
       }`}
-      aria-label={focus ? "Show response" : "Show focus mode"}
+      aria-label={focus ? "Inspect mode" : "Focus mode"}
       aria-pressed={focus}
-      title={focus ? "Show Codex transcript" : "Show focus mode"}
+      title={focus ? "Inspect mode" : "Focus mode"}
     >
       <Icon name={focus ? "fa-message" : "fa-circle-nodes"} />
-      <span className="hidden sm:inline">{focus ? "Response" : "Focus"}</span>
+      <span className="hidden sm:inline">{focus ? "Inspect mode" : "Focus mode"}</span>
     </button>
   );
 }
@@ -1337,7 +1370,7 @@ function EditorFileRail({
   const tree = useMemo(() => buildEditorTree(visibleFiles), [visibleFiles]);
   const diffStats = useMemo(() => summarizeDiffStats(git.files), [git.files]);
   const repository = git.repositoryName || "repository";
-  const branch = git.initialized ? git.branch || "unknown" : "not initialized";
+  const branch = git.initialized ? isDetachedGit(git) ? "Detached HEAD" : git.branch || "unknown" : "not initialized";
   const repositoryBranch = `${repository}/${branch}`;
   const clean = git.initialized && git.clean;
 
@@ -1512,7 +1545,7 @@ function ChatStatusBar({
   onCredentialsClick: () => void;
 }) {
   const repository = git.repositoryName || "repository";
-  const branch = git.initialized ? git.branch || "unknown" : "not initialized";
+  const branch = git.initialized ? isDetachedGit(git) ? "Detached HEAD" : git.branch || "unknown" : "not initialized";
   const credentialsConfigured = Boolean(providerConnection);
 
   return (
@@ -1860,9 +1893,11 @@ function TerraformActionBar({
   onDiff,
   onGit,
   onCommitPush,
+  onMerge,
   onApprove,
   onSandbox,
   missingVariables,
+  canMergeBranch,
   placement = "input"
 }: {
   plan: InfraPlan | null;
@@ -1876,9 +1911,11 @@ function TerraformActionBar({
   onDiff: () => void;
   onGit: () => void;
   onCommitPush: () => void;
+  onMerge: () => void;
   onApprove: () => void;
   onSandbox: (mode: SandboxMode) => void;
   missingVariables: number;
+  canMergeBranch: boolean;
   placement?: "input" | "focus";
 }) {
   const [openGroup, setOpenGroup] = useState<"terraform" | "git" | null>(null);
@@ -1924,6 +1961,7 @@ function TerraformActionBar({
             <div className="grid gap-1">
               <ActionMenuButton icon="fa-code-branch" label="View diff" disabled={loading} onClick={() => run(onDiff)} />
               <ActionMenuButton icon="fa-cloud-arrow-up" label="Commit & push" disabled={loading} onClick={() => run(onCommitPush)} />
+              <ActionMenuButton icon="fa-code-merge" label="Merge" disabled={loading || !canMergeBranch} onClick={() => run(onMerge)} />
               <ActionMenuButton icon="fa-code-commit" label="Git workspace" disabled={loading} onClick={() => run(onGit)} />
             </div>
           ) : null}
@@ -3061,7 +3099,8 @@ function CommitPushModal({
   onInit,
   onCommit,
   onPush,
-  onCommitAndPush
+  onCommitAndPush,
+  onCreateBranch
 }: {
   git: GitWorkspaceStatus;
   loading: boolean;
@@ -3072,12 +3111,19 @@ function CommitPushModal({
   onCommit: (mode: "all" | "staged") => void;
   onPush: () => void;
   onCommitAndPush: () => void;
+  onCreateBranch: (branch: string) => void;
 }) {
   const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
   const changedCount = git.files.length;
-  const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0;
+  const detached = isDetachedGit(git);
+  const [detachedBranchName, setDetachedBranchName] = useState(defaultDetachedBranchName(git));
+  const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0 && !detached;
   const canCommit = git.initialized && changedCount > 0;
-  const canCommitAndPush = canCommit && Boolean(git.remoteUrl);
+  const canCommitAndPush = canCommit && Boolean(git.remoteUrl) && !detached;
+
+  useEffect(() => {
+    if (detached) setDetachedBranchName(defaultDetachedBranchName(git));
+  }, [detached, git.head?.shortHash]);
 
   return (
     <Modal
@@ -3097,6 +3143,16 @@ function CommitPushModal({
           </button>
         ) : (
           <>
+            {detached ? (
+              <DetachedHeadCallout
+                git={git}
+                branchName={detachedBranchName}
+                loading={loading}
+                onBranchNameChange={setDetachedBranchName}
+                onCreateBranch={() => onCreateBranch(detachedBranchName)}
+              />
+            ) : null}
+
             <div className="grid gap-3 rounded-[1.5rem] border border-gray-200 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -3146,6 +3202,154 @@ function CommitPushModal({
   );
 }
 
+function MergeBranchModal({
+  git,
+  loading,
+  onClose,
+  onMerge
+}: {
+  git: GitWorkspaceStatus;
+  loading: boolean;
+  onClose: () => void;
+  onMerge: (targetBranch: string, push: boolean) => void | Promise<void>;
+}) {
+  const sourceBranch = git.branch || "";
+  const [targetBranch, setTargetBranch] = useState(defaultMergeTargetBranch(git));
+  const [pushAfterMerge, setPushAfterMerge] = useState(false);
+  const detached = isDetachedGit(git);
+  const sameBranch = Boolean(sourceBranch && targetBranch.trim() === sourceBranch);
+  const disabled = loading || detached || !sourceBranch || sameBranch || !targetBranch.trim();
+
+  useEffect(() => {
+    setTargetBranch(defaultMergeTargetBranch(git));
+  }, [git.branch]);
+
+  return (
+    <Modal
+      title="Merge branch"
+      description="Merge the current workspace branch into a target branch."
+      icon="fa-code-merge"
+      size="xl"
+      onClose={onClose}
+    >
+      <div className="mt-5 grid gap-4">
+        <GitStatusStrip git={git} />
+
+        {detached ? (
+          <p className="rounded-[1.5rem] border border-[#F05032]/20 bg-[#F05032]/5 p-4 text-sm leading-6 text-gray-700">
+            This workspace is on a detached HEAD. Create a branch before merging.
+          </p>
+        ) : (
+          <div className="grid gap-4 rounded-[1.5rem] border border-gray-200 p-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl bg-gray-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">Source</p>
+                <p className="mt-2 truncate font-mono text-sm font-semibold text-gray-900">{sourceBranch || "unknown"}</p>
+              </div>
+              <label className="grid gap-2 text-sm font-medium text-gray-700">
+                Target branch
+                <input
+                  value={targetBranch}
+                  onChange={(event) => setTargetBranch(event.target.value)}
+                  className="h-12 rounded-2xl border border-gray-200 bg-white px-4 font-mono outline-none transition focus:border-black"
+                  placeholder="main"
+                />
+              </label>
+            </div>
+
+            {sameBranch ? (
+              <p className="rounded-2xl bg-amber-50 p-3 text-xs font-medium leading-5 text-amber-800">
+                Pick a different target branch. Source and target cannot be the same.
+              </p>
+            ) : (
+              <p className="text-xs leading-5 text-gray-500">
+                The workspace must be clean. A merge conflict will stop the operation so you can resolve it in the repository.
+              </p>
+            )}
+
+            <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+              <input
+                type="checkbox"
+                checked={pushAfterMerge}
+                onChange={(event) => setPushAfterMerge(event.target.checked)}
+              />
+              Push target branch after merge
+            </label>
+
+            <div className="flex justify-end gap-2">
+              <GitButton label="Cancel" disabled={loading} onClick={onClose} />
+              <GitButton
+                label="Merge"
+                tooltip="Merge the current branch into the target branch"
+                icon={loading ? "fa-circle-notch fa-spin" : "fa-code-merge"}
+                primary
+                disabled={disabled}
+                onClick={() => void onMerge(targetBranch.trim(), pushAfterMerge)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function DetachedHeadCallout({
+  git,
+  branchName,
+  loading,
+  onBranchNameChange,
+  onCreateBranch
+}: {
+  git: GitWorkspaceStatus;
+  branchName: string;
+  loading: boolean;
+  onBranchNameChange: (value: string) => void;
+  onCreateBranch: () => void;
+}) {
+  const shortHash = git.head?.shortHash || "HEAD";
+  return (
+    <section className="rounded-[1.5rem] border border-[#F05032]/20 bg-[#F05032]/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-semibold text-gray-950">
+            <Icon name="fa-code-branch" className="text-[#F05032]" />
+            Detached HEAD
+          </p>
+          <p className="mt-1 text-xs leading-5 text-gray-600">
+            The workspace is checked out at <span className="font-mono font-semibold text-gray-900">{shortHash}</span>.
+            Create a branch from this commit before pushing.
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 font-mono text-[11px] font-semibold text-[#F05032]">
+          no branch
+        </span>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <label className="grid gap-1.5 text-xs font-semibold text-gray-700">
+          New branch name
+          <input
+            value={branchName}
+            onChange={(event) => onBranchNameChange(event.target.value)}
+            className="h-10 rounded-2xl border border-gray-200 bg-white px-3 font-mono text-sm text-black outline-none transition focus:border-[#F05032]"
+            placeholder="workspace-updates"
+          />
+        </label>
+        <div className="flex items-end">
+          <GitButton
+            label="Create branch"
+            tooltip="Create a branch at the current detached HEAD"
+            icon="fa-plus"
+            primary
+            disabled={loading || !branchName.trim()}
+            onClick={onCreateBranch}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function GitModal({
   git,
   history,
@@ -3161,6 +3365,7 @@ function GitModal({
   onUnstage,
   onCommit,
   onPush,
+  onCreateBranch,
   onStash,
   onStashApply,
   onStashDrop,
@@ -3185,6 +3390,7 @@ function GitModal({
   onUnstage: (paths: string[]) => void;
   onCommit: (mode: "all" | "staged") => void;
   onPush: () => void;
+  onCreateBranch: (branch: string) => void;
   onStash: (includeUntracked: boolean) => void;
   onStashApply: (index: number, mode: "apply" | "pop") => void;
   onStashDrop: (index: number) => void;
@@ -3204,9 +3410,15 @@ function GitModal({
   const [discardConfirmPath, setDiscardConfirmPath] = useState<string | null>(null);
   const [resetAllConfirm, setResetAllConfirm] = useState("");
   const [focusedGitPanel, setFocusedGitPanel] = useState<"history" | "changes" | "stashes" | null>(null);
+  const detached = isDetachedGit(git);
+  const [detachedBranchName, setDetachedBranchName] = useState(defaultDetachedBranchName(git));
   const dirty = git.initialized && !git.clean;
   const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
   const unstagedCount = git.files.filter((file) => Boolean(file.worktreeStatus)).length;
+
+  useEffect(() => {
+    if (detached) setDetachedBranchName(defaultDetachedBranchName(git));
+  }, [detached, git.head?.shortHash]);
 
   function startHistoryAction(kind: "checkout" | "branch" | "revert" | "reset", commit: GitCommit) {
     setPendingAction({ kind, commit });
@@ -3245,7 +3457,18 @@ function GitModal({
             Initialize Git repository
           </button>
         ) : (
-          <div className={`grid min-h-0 gap-4 lg:h-[calc(100vh-280px)] ${focusedGitPanel ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(360px,0.92fr)_minmax(460px,1.08fr)]"}`}>
+          <>
+          {detached ? (
+            <DetachedHeadCallout
+              git={git}
+              branchName={detachedBranchName}
+              loading={loading}
+              onBranchNameChange={setDetachedBranchName}
+              onCreateBranch={() => onCreateBranch(detachedBranchName)}
+            />
+          ) : null}
+
+          <div className={`grid min-h-0 gap-4 ${detached ? "lg:h-[calc(100vh-340px)]" : "lg:h-[calc(100vh-280px)]"} ${focusedGitPanel ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(360px,0.92fr)_minmax(460px,1.08fr)]"}`}>
             {focusedGitPanel === null || focusedGitPanel === "history" ? (
             <section className="flex min-h-0 flex-col gap-3 rounded-[1.5rem] border border-gray-200 p-4 lg:h-full">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3258,7 +3481,7 @@ function GitModal({
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <GitPanelFocusButton focused={focusedGitPanel === "history"} onClick={() => setFocusedGitPanel(focusedGitPanel === "history" ? null : "history")} />
-                  <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip="Push committed changes to the remote branch" icon="fa-arrow-up" disabled={loading || !git.remoteUrl} onClick={onPush} />
+                  <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip={detached ? "Create a branch from this detached HEAD before pushing" : "Push committed changes to the remote branch"} icon="fa-arrow-up" disabled={loading || !git.remoteUrl || detached} onClick={onPush} />
                 </div>
               </div>
 
@@ -3476,6 +3699,7 @@ function GitModal({
             </div>
             ) : null}
           </div>
+          </>
         )}
       </div>
     </Modal>
@@ -3484,10 +3708,11 @@ function GitModal({
 
 function GitStatusStrip({ git }: { git: GitWorkspaceStatus }) {
   const repository = git.repositoryName || "repository";
-  const branch = git.branch || "-";
-  const upstream = git.upstream || "no upstream";
+  const detached = isDetachedGit(git);
+  const branch = detached ? "Detached HEAD" : git.branch || "-";
+  const upstream = detached ? `HEAD ${git.head?.shortHash || ""}`.trim() : git.upstream || "no upstream";
   const changes = git.clean ? "clean" : `${git.files.length} changed`;
-  const sync = (git.ahead || git.behind) ? `ahead ${git.ahead || 0} / behind ${git.behind || 0}` : "synced";
+  const sync = detached ? "branch required" : (git.ahead || git.behind) ? `ahead ${git.ahead || 0} / behind ${git.behind || 0}` : "synced";
   const repositoryUrl = gitRepositoryWebUrl(git.remoteUrl);
 
   return (
@@ -3511,10 +3736,26 @@ function GitStatusStrip({ git }: { git: GitWorkspaceStatus }) {
       <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-gray-500">
         <span className="rounded-full bg-white px-2.5 py-1">upstream <span className="font-mono text-gray-800">{upstream}</span></span>
         <span className={`rounded-full px-2.5 py-1 font-semibold ${git.clean ? "bg-white text-gray-500" : "bg-[#F05032]/10 text-[#F05032]"}`}>{changes}</span>
-        <span className="rounded-full bg-white px-2.5 py-1">{sync}</span>
+        <span className={`rounded-full px-2.5 py-1 ${detached ? "bg-[#F05032]/10 text-[#F05032]" : "bg-white"}`}>{sync}</span>
       </div>
     </div>
   );
+}
+
+function isDetachedGit(git: GitWorkspaceStatus) {
+  return Boolean(git.initialized && git.branch === "detached");
+}
+
+function defaultDetachedBranchName(git: GitWorkspaceStatus) {
+  const shortHash = git.head?.shortHash || "head";
+  return `workspace-${shortHash}`;
+}
+
+function defaultMergeTargetBranch(git: GitWorkspaceStatus) {
+  const branch = git.branch || "";
+  if (branch && branch !== "main") return "main";
+  if (branch && branch !== "master") return "master";
+  return "main";
 }
 
 function gitRepositoryWebUrl(remoteUrl?: string) {

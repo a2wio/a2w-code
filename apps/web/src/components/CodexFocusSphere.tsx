@@ -293,10 +293,10 @@ export function CodexFocusSphere({
         type="button"
         onClick={onShowTranscript}
         className="absolute left-1/2 top-2 z-30 inline-flex h-9 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-3 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black sm:top-4"
-        aria-label="Show response"
+        aria-label="Inspect mode"
       >
         <Icon name="fa-message" />
-        Show response
+        Inspect mode
       </button>
     </section>
   );
@@ -417,9 +417,9 @@ function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
   if (!visibleActions.length) return null;
 
   return (
-    <div className="absolute right-0 top-0 z-20 w-[min(22.5rem,calc(100%-0.5rem))]">
-      <NotificationFadeEdge edge="top" />
-      <NotificationFadeEdge edge="bottom" />
+    <div className="absolute right-4 top-6 z-20 w-[min(22.5rem,calc(100%-0.5rem))]">
+      {/* <NotificationFadeEdge edge="top" />
+      <NotificationFadeEdge edge="bottom" /> */}
       <div
         ref={scrollRef}
         onScroll={updateFocusedNotification}
@@ -435,7 +435,7 @@ function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
               }}
               className={`motion-enter relative flex min-h-10 origin-center items-center gap-2 rounded-2xl border px-3 py-2 text-xs backdrop-blur-2xl ring-1 transition duration-300 ease-out ${index > 0 ? "-mt-2" : ""} ${
                 index === focusedIndex
-                  ? "scale-[1.025] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
+                  ? "scale-[1.065] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
                   : "scale-[0.975] border-white/35 bg-white/[0.12] text-gray-400 ring-white/15"
               }`}
               style={{ zIndex: index === focusedIndex ? 80 : Math.max(1, 40 - Math.abs(index - focusedIndex)) }}

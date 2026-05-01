@@ -179,6 +179,44 @@ export async function pushWorkspace(workspaceId: string) {
   return getGitDetails(workspaceId);
 }
 
+export async function createBranchFromHead(workspaceId: string, branchName: string) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const branch = cleanGitBranchName(branchName);
+  await git(repoRoot, ["checkout", "-b", branch]);
+  return getGitDetails(workspaceId);
+}
+
+export async function mergeCurrentBranch(workspaceId: string, input: { targetBranch: string; push?: boolean }) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const sourceBranch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
+  if (!sourceBranch) throw new Error("Cannot merge from a detached HEAD. Create or checkout a branch first.");
+  if (!(await isWorkingTreeClean(repoRoot))) throw new Error("Commit or stash workspace changes before merging.");
+
+  const targetBranch = cleanGitBranchName(input.targetBranch || "main");
+  if (sourceBranch === targetBranch) throw new Error("Source and target branch are the same.");
+
+  const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
+  if (remoteOrigin) {
+    await withWorkspaceGitAuth(workspaceId, async (env) => {
+      await gitWithEnv(repoRoot, ["fetch", "origin", targetBranch], env, 120_000).catch(() => undefined);
+    });
+  }
+
+  await git(repoRoot, ["checkout", targetBranch]).catch(async () => {
+    if (!remoteOrigin) throw new Error(`Target branch ${targetBranch} does not exist locally.`);
+    await git(repoRoot, ["checkout", "-B", targetBranch, `origin/${targetBranch}`]);
+  });
+  await git(repoRoot, ["merge", "--no-ff", sourceBranch, "-m", `Merge branch '${sourceBranch}' into ${targetBranch}`], 120_000);
+
+  if (input.push) {
+    await withWorkspaceGitAuth(workspaceId, async (env) => {
+      await gitWithEnv(repoRoot, ["push", "-u", "origin", targetBranch], env, 120_000);
+    });
+  }
+
+  return getGitDetails(workspaceId);
+}
+
 export async function stashWorkspace(workspaceId: string, input: { includeUntracked?: boolean; message?: string } = {}) {
   const repoRoot = await requireGitRepository(workspaceId);
   if (await isWorkingTreeClean(repoRoot)) throw new Error("There are no changes to stash.");
@@ -207,8 +245,7 @@ export async function checkoutGitRef(workspaceId: string, input: { ref: string; 
   await ensureCleanOrStash(repoRoot, input.stashBefore);
   const branch = input.createBranch?.trim();
   if (branch) {
-    if (!/^[A-Za-z0-9._/-]+$/.test(branch)) throw new Error("Branch name contains unsupported characters.");
-    await git(repoRoot, ["checkout", "-b", branch, ref]);
+    await git(repoRoot, ["checkout", "-b", cleanGitBranchName(branch), ref]);
   } else {
     await git(repoRoot, ["checkout", ref]);
   }
@@ -268,6 +305,23 @@ function cleanRelativePath(path: string) {
 function cleanGitRef(ref: string) {
   const clean = String(ref || "").trim();
   if (!/^[A-Za-z0-9._/@{}:-]+$/.test(clean)) throw new Error("Invalid Git ref.");
+  return clean;
+}
+
+function cleanGitBranchName(branch: string) {
+  const clean = String(branch || "").trim();
+  if (!clean) throw new Error("Branch name is required.");
+  if (
+    clean.startsWith("-") ||
+    clean.startsWith("/") ||
+    clean.endsWith("/") ||
+    clean.includes("..") ||
+    clean.includes("//") ||
+    clean.includes("@{") ||
+    /[\s~^:?*[\\]/.test(clean)
+  ) {
+    throw new Error("Branch name contains unsupported characters.");
+  }
   return clean;
 }
 
