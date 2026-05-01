@@ -9,6 +9,7 @@ import { Icon } from "./Icon";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { Modal } from "./Modal";
 import { Toast } from "./Toast";
+import { CodexFocusSphere, type CodexFocusAction, type CodexFocusStatus } from "./CodexFocusSphere";
 
 const promptSuggestions = [
   "Run terraform fmt for my first resource.",
@@ -167,7 +168,9 @@ type CodexTmuxPane = {
   output: string;
 };
 type CodexControlKey = "up" | "down" | "enter" | "escape";
+type ChatDisplayMode = "transcript" | "focus";
 const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
+const CHAT_DISPLAY_MODE_STORAGE_KEY = "a2w.chat.displayMode.v1";
 const WORKSPACE_TREE_POLL_INTERVAL_MS = 5000;
 const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
 const CHAT_DELETE_EVENT = "a2w:chat-delete";
@@ -181,6 +184,24 @@ function scrollChatToBottom(element: HTMLDivElement | null) {
 function isNearScrollBottom(element: HTMLDivElement | null) {
   if (!element) return true;
   return element.scrollHeight - element.scrollTop - element.clientHeight < CHAT_BOTTOM_THRESHOLD_PX;
+}
+
+function readChatDisplayMode(): ChatDisplayMode {
+  if (typeof window === "undefined") return "transcript";
+  try {
+    return window.localStorage.getItem(CHAT_DISPLAY_MODE_STORAGE_KEY) === "focus" ? "focus" : "transcript";
+  } catch {
+    return "transcript";
+  }
+}
+
+function persistChatDisplayMode(mode: ChatDisplayMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_DISPLAY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Display mode is preference-only; the chat remains usable without persistence.
+  }
 }
 
 export function AgentChat({
@@ -232,6 +253,7 @@ export function AgentChat({
   const [diffOpen, setDiffOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
   const [commitPushOpen, setCommitPushOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
@@ -251,6 +273,8 @@ export function AgentChat({
   const [codexPane, setCodexPane] = useState<CodexTmuxPane | null>(null);
   const [activeProviderConnection, setActiveProviderConnection] = useState(providerConnection);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("transcript");
+  const [displayModeReady, setDisplayModeReady] = useState(false);
   const [allowNetwork, setAllowNetwork] = useState(false);
   const [mode, setMode] = useState<SandboxMode>("terraform-fmt");
   const [applyConfirm, setApplyConfirm] = useState("");
@@ -270,6 +294,7 @@ export function AgentChat({
   const selectedSlashCommand = slashMatches[slashIndex] || null;
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
   const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
+  const codexTurns = useMemo(() => parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output]);
 
   const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
   const visibleMessages = useMemo(() => {
@@ -306,10 +331,37 @@ export function AgentChat({
       .at(-1) || null;
   }, [messages, plans]);
   const activeApprovalStatusPlan = approvalStatusPlan?.chatId === activeChatId ? approvalStatusPlan : null;
+  const focusModeActive = editorMode && displayMode === "focus";
+  const focusState = useMemo(() => buildCodexFocusState({
+    pane: codexPane,
+    turns: codexTurns,
+    loading,
+    pendingStatus,
+    missingVariables: missingRequiredVariables.length,
+    git,
+    root: selectedRoot,
+    selectedRun
+  }), [codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
 
   useEffect(() => {
     setChatList(chats);
   }, [chats]);
+
+  useEffect(() => {
+    setDisplayMode(readChatDisplayMode());
+    setDisplayModeReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!displayModeReady) return undefined;
+    persistChatDisplayMode(displayMode);
+    if (displayMode === "transcript") {
+      shouldAutoScrollRef.current = true;
+      const frame = window.requestAnimationFrame(() => scrollChatToBottom(scrollRef.current));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [displayMode, displayModeReady]);
 
   useEffect(() => {
     function handleChatUpsert(event: Event) {
@@ -814,6 +866,15 @@ export function AgentChat({
     }
   }
 
+  async function openMerge() {
+    setMergeOpen(true);
+    try {
+      await refreshGit(true);
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function gitAction(action: string, body: Record<string, unknown> = {}, success = "Git action completed") {
     setGitLoading(true);
     try {
@@ -829,8 +890,10 @@ export function AgentChat({
       setGitStashes(data.stashes || []);
       flash(success);
       router.refresh();
+      return true;
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setGitLoading(false);
     }
@@ -918,64 +981,114 @@ export function AgentChat({
           />
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
-            {activeChatId !== "new" && selectedRoot ? (
-              <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
-            ) : (
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">New chat</p>
-                <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W</h1>
+          {focusModeActive ? null : (
+            <div className="relative flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
+              <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
+                {activeChatId !== "new" && selectedRoot ? (
+                  <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
+                ) : (
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">New chat</p>
+                    <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W</h1>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-
-          <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
-            {editorMode ? (
-              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
-                {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                {loading && !pendingStatus ? <ThinkingBubble /> : null}
-              </div>
-            ) : visibleMessages.length ? (
-              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                {visibleMessages.map((message) => (
-                  <MessageBubble
-                    key={message.id}
-                    message={message}
-                    onAction={handleMessageAction}
-                  />
-                ))}
-                {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                {loading && !pendingStatus ? <ThinkingBubble /> : null}
-              </div>
-            ) : (
-              pendingStatus ? <PendingBubble message={pendingStatus} centered /> : loading ? <ThinkingBubble centered /> : <EmptyChat onPick={setValue} />
-            )}
-          </div>
-
-          <form onSubmit={submit} className="h-[156px] shrink-0 border-t border-gray-100 bg-white px-3 py-2 sm:px-5">
-            <div className="mx-auto max-w-3xl">
-              <TerraformActionBar
-                plan={selectedPlan}
-                root={selectedRoot}
-                loading={loading}
-                applyDisabled={applyDisabled}
-                applyRuntimeEnabled={applyRuntimeEnabled}
-                onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
-                onRuns={() => setRunsOpen(true)}
-                onVariables={openVariables}
-                onDiff={openDiff}
-                onGit={openGit}
-                onCommitPush={openCommitPush}
-                onApprove={() => selectedPlan && void approve(selectedPlan)}
-                onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
-                missingVariables={missingRequiredVariables.length}
-              />
+              {editorMode ? (
+                <div className="absolute left-1/2 -translate-x-1/2">
+                  <ChatDisplayModeToggle mode={displayMode} onChange={setDisplayMode} />
+                </div>
+              ) : null}
             </div>
+          )}
 
-            <div className="relative mx-auto mt-2 max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5">
+          {focusModeActive ? (
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <CodexFocusSphere
+                status={focusState.status}
+                statusLabel={focusState.statusLabel}
+                detail={focusState.detail}
+                rootName={focusState.rootName}
+                changedFiles={focusState.changedFiles}
+                additions={focusState.additions}
+                deletions={focusState.deletions}
+                actions={focusState.actions}
+                onShowTranscript={() => setDisplayMode("transcript")}
+              />
+              <div className="absolute left-2 top-2 z-40 sm:left-4 sm:top-4">
+                <TerraformActionBar
+                  plan={selectedPlan}
+                  root={selectedRoot}
+                  loading={loading}
+                  applyDisabled={applyDisabled}
+                  applyRuntimeEnabled={applyRuntimeEnabled}
+                  onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
+                  onRuns={() => setRunsOpen(true)}
+                  onVariables={openVariables}
+                  onDiff={openDiff}
+                  onGit={openGit}
+                  onCommitPush={openCommitPush}
+                  onMerge={openMerge}
+                  onApprove={() => selectedPlan && void approve(selectedPlan)}
+                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  missingVariables={missingRequiredVariables.length}
+                  canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
+                  placement="focus"
+                />
+              </div>
+            </div>
+          ) : (
+            <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
+              {editorMode ? (
+                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                  <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
+                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
+                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
+                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
+                </div>
+              ) : visibleMessages.length ? (
+                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                  {visibleMessages.map((message) => (
+                    <MessageBubble
+                      key={message.id}
+                      message={message}
+                      onAction={handleMessageAction}
+                    />
+                  ))}
+                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
+                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
+                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
+                </div>
+              ) : (
+                pendingStatus ? <PendingBubble message={pendingStatus} centered /> : loading ? <ThinkingBubble centered /> : <EmptyChat onPick={setValue} />
+              )}
+            </div>
+          )}
+
+          <form onSubmit={submit} className={`shrink-0 px-3 py-2 sm:px-5 ${focusModeActive ? "h-[144px] border-t-0 bg-[#fbfbf9]" : "h-[168px] border-t border-gray-100 bg-white"}`}>
+            {!focusModeActive ? (
+              <div className="mx-auto max-w-3xl">
+                <TerraformActionBar
+                  plan={selectedPlan}
+                  root={selectedRoot}
+                  loading={loading}
+                  applyDisabled={applyDisabled}
+                  applyRuntimeEnabled={applyRuntimeEnabled}
+                  onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
+                  onRuns={() => setRunsOpen(true)}
+                  onVariables={openVariables}
+                  onDiff={openDiff}
+                  onGit={openGit}
+                  onCommitPush={openCommitPush}
+                  onMerge={openMerge}
+                  onApprove={() => selectedPlan && void approve(selectedPlan)}
+                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  missingVariables={missingRequiredVariables.length}
+                  canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
+                />
+              </div>
+            ) : null}
+
+            <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${focusModeActive ? "mt-0" : "mt-2"}`}>
               {codexPicker ? (
                 <CodexChoicePicker picker={codexPicker} chatId={activeChatId} onPane={setCodexPane} onKey={(key) => sendCodexControlKey(key, { requirePicker: true })} />
               ) : slashOpen ? (
@@ -1026,7 +1139,7 @@ export function AgentChat({
                       event.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-black outline-none"
+                  className="max-h-40 min-h-12 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-6 text-black outline-none"
                   placeholder={codexStagedInput ? "Submitting queued Codex input..." : codexBusy ? "Codex is working..." : "Message A2W..."}
                 />
                 <button
@@ -1110,6 +1223,18 @@ export function AgentChat({
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
           onCommitAndPush={commitAllAndPush}
+          onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
+        />
+      ) : null}
+
+      {mergeOpen ? (
+        <MergeBranchModal
+          git={git}
+          loading={gitLoading}
+          onClose={() => setMergeOpen(false)}
+          onMerge={async (targetBranch, push) => {
+            if (await gitAction("merge-current", { targetBranch, push }, "Branch merged")) setMergeOpen(false);
+          }}
         />
       ) : null}
 
@@ -1129,6 +1254,7 @@ export function AgentChat({
           onUnstage={(paths) => gitAction("unstage", { paths }, paths.length ? "File unstaged" : "All changes unstaged")}
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
+          onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
           onStash={(includeUntracked) => gitAction("stash", { message: stashMessage, includeUntracked }, "Changes stashed")}
           onStashApply={(index, mode) => gitAction(mode === "pop" ? "stash-pop" : "stash-apply", { index }, mode === "pop" ? "Stash popped" : "Stash applied")}
           onStashDrop={(index) => gitAction("stash-drop", { index, confirm: "DROP" }, "Stash dropped")}
@@ -1186,6 +1312,27 @@ export function AgentChat({
   );
 }
 
+function ChatDisplayModeToggle({ mode, onChange }: { mode: ChatDisplayMode; onChange: (mode: ChatDisplayMode) => void }) {
+  const focus = mode === "focus";
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(focus ? "transcript" : "focus")}
+      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition ${
+        focus
+          ? "border-black bg-black text-white hover:bg-gray-800"
+          : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-black"
+      }`}
+      aria-label={focus ? "Inspect mode" : "Focus mode"}
+      aria-pressed={focus}
+      title={focus ? "Inspect mode" : "Focus mode"}
+    >
+      <Icon name={focus ? "fa-message" : "fa-circle-nodes"} />
+      <span className="hidden sm:inline">{focus ? "Inspect mode" : "Focus mode"}</span>
+    </button>
+  );
+}
+
 function buildChatThreads(chats: Chat[], messages: Message[], plans: InfraPlan[]): ChatThread[] {
   return chats
     .slice()
@@ -1223,7 +1370,7 @@ function EditorFileRail({
   const tree = useMemo(() => buildEditorTree(visibleFiles), [visibleFiles]);
   const diffStats = useMemo(() => summarizeDiffStats(git.files), [git.files]);
   const repository = git.repositoryName || "repository";
-  const branch = git.initialized ? git.branch || "unknown" : "not initialized";
+  const branch = git.initialized ? isDetachedGit(git) ? "Detached HEAD" : git.branch || "unknown" : "not initialized";
   const repositoryBranch = `${repository}/${branch}`;
   const clean = git.initialized && git.clean;
 
@@ -1398,7 +1545,7 @@ function ChatStatusBar({
   onCredentialsClick: () => void;
 }) {
   const repository = git.repositoryName || "repository";
-  const branch = git.initialized ? git.branch || "unknown" : "not initialized";
+  const branch = git.initialized ? isDetachedGit(git) ? "Detached HEAD" : git.branch || "unknown" : "not initialized";
   const credentialsConfigured = Boolean(providerConnection);
 
   return (
@@ -1746,9 +1893,12 @@ function TerraformActionBar({
   onDiff,
   onGit,
   onCommitPush,
+  onMerge,
   onApprove,
   onSandbox,
-  missingVariables
+  missingVariables,
+  canMergeBranch,
+  placement = "input"
 }: {
   plan: InfraPlan | null;
   root: TerraformRoot | null;
@@ -1761,14 +1911,18 @@ function TerraformActionBar({
   onDiff: () => void;
   onGit: () => void;
   onCommitPush: () => void;
+  onMerge: () => void;
   onApprove: () => void;
   onSandbox: (mode: SandboxMode) => void;
   missingVariables: number;
+  canMergeBranch: boolean;
+  placement?: "input" | "focus";
 }) {
   const [openGroup, setOpenGroup] = useState<"terraform" | "git" | null>(null);
   const approved = Boolean(plan?.status.includes("approved"));
   const canMutate = approved && !applyDisabled && applyRuntimeEnabled;
   const disabled = loading || !plan;
+  const focusPlacement = placement === "focus";
 
   function run(action: () => void) {
     setOpenGroup(null);
@@ -1776,9 +1930,15 @@ function TerraformActionBar({
   }
 
   return (
-    <div className="relative flex min-h-10 items-start justify-between gap-4">
+    <div className={`relative flex min-h-10 items-start ${focusPlacement ? "flex-col gap-2" : "justify-between gap-4"}`}>
       {openGroup ? (
-        <div className={`absolute bottom-full z-20 mb-2 w-64 rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10 ${openGroup === "terraform" ? "left-0" : "right-0"}`}>
+        <div
+          className={`absolute z-20 w-64 rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10 ${
+            focusPlacement
+              ? "left-full top-0 ml-2"
+              : `bottom-full mb-2 ${openGroup === "terraform" ? "left-0" : "right-0"}`
+          }`}
+        >
           {openGroup === "terraform" ? (
             <div className="grid gap-1">
               <ActionMenuButton icon="fa-code-branch" label="View plan" disabled={disabled} onClick={() => run(onViewPlan)} />
@@ -1801,16 +1961,17 @@ function TerraformActionBar({
             <div className="grid gap-1">
               <ActionMenuButton icon="fa-code-branch" label="View diff" disabled={loading} onClick={() => run(onDiff)} />
               <ActionMenuButton icon="fa-cloud-arrow-up" label="Commit & push" disabled={loading} onClick={() => run(onCommitPush)} />
+              <ActionMenuButton icon="fa-code-merge" label="Merge" disabled={loading || !canMergeBranch} onClick={() => run(onMerge)} />
               <ActionMenuButton icon="fa-code-commit" label="Git workspace" disabled={loading} onClick={() => run(onGit)} />
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-[#fbfbf9] p-1">
+      <div className={`flex items-center gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
         <GroupTrigger icon={<TerraformMark />} label="Terraform" active={openGroup === "terraform"} onClick={() => setOpenGroup(openGroup === "terraform" ? null : "terraform")} />
       </div>
-      <div className="flex items-center justify-end gap-1.5 rounded-full border border-gray-200 bg-[#fbfbf9] p-1">
+      <div className={`flex items-center justify-end gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
         <GroupTrigger icon={<Icon name="fa-brands fa-git-alt" className="text-[13px] text-[#F05032]" />} label="Git" active={openGroup === "git"} onClick={() => setOpenGroup(openGroup === "git" ? null : "git")} />
       </div>
     </div>
@@ -2292,6 +2453,98 @@ type CodexPaneChoicePicker = {
     description?: string;
   }>;
 };
+
+function buildCodexFocusState({
+  pane,
+  turns,
+  loading,
+  pendingStatus,
+  missingVariables,
+  git,
+  root,
+  selectedRun
+}: {
+  pane: CodexTmuxPane | null;
+  turns: CodexPaneTurn[];
+  loading: boolean;
+  pendingStatus: string | null;
+  missingVariables: number;
+  git: GitWorkspaceStatus;
+  root: TerraformRoot | null;
+  selectedRun?: SandboxRun | null;
+}): {
+  status: CodexFocusStatus;
+  statusLabel: string;
+  detail: string;
+  rootName: string;
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  actions: CodexFocusAction[];
+} {
+  const latestTurn = turns.at(-1);
+  const latestActions = latestTurn?.actions || [];
+  const recentActions = latestActions.slice(-18);
+  const diffStats = summarizeDiffStats(git.files);
+  const activeAction = recentActions.at(-1);
+  const running = Boolean(loading || pendingStatus || (pane?.running && !pane.ready && !pane.viewingTranscript));
+  const rootName = root?.name || root?.path.split("/").filter(Boolean).at(-1) || "workspace";
+  const runFailed = selectedRun?.status === "failed";
+  let status: CodexFocusStatus = "idle";
+
+  if (runFailed || /failed|error/i.test(pendingStatus || "")) status = "error";
+  else if (missingVariables > 0) status = "blocked";
+  else if (running && activeAction && activeAction.kind !== "thinking") status = "tool_running";
+  else if (running) status = "thinking";
+  else if (git.files.length > 0) status = "files_changed";
+  else if (pane?.ready || latestTurn?.response) status = "complete";
+
+  const statusLabel = focusStatusLabel(status, pendingStatus, activeAction, missingVariables);
+  const detail = focusStatusDetail(status, git.files.length, rootName, activeAction, selectedRun);
+
+  return {
+    status,
+    statusLabel,
+    detail,
+    rootName,
+    changedFiles: git.files.length,
+    additions: diffStats.additions,
+    deletions: diffStats.deletions,
+    actions: recentActions.map((action) => ({
+      kind: action.kind,
+      label: action.label,
+      detail: action.detail
+    }))
+  };
+}
+
+function focusStatusLabel(status: CodexFocusStatus, pendingStatus: string | null, activeAction: CodexPaneAction | undefined, missingVariables: number) {
+  if (status === "blocked") return `${missingVariables} input${missingVariables === 1 ? "" : "s"} needed`;
+  if (status === "error") return "Attention needed";
+  if (pendingStatus) return pendingStatus.replace(/\.\.\.$/, "");
+  if (status === "tool_running") return activeAction?.kind === "search" ? "Searching" : "Running tools";
+  if (status === "files_changed") return "Workspace changed";
+  if (status === "thinking") return "Codex is thinking";
+  if (status === "complete") return "Codex is ready";
+  return "Codex focus";
+}
+
+function focusStatusDetail(
+  status: CodexFocusStatus,
+  changedFiles: number,
+  rootName: string,
+  activeAction: CodexPaneAction | undefined,
+  selectedRun?: SandboxRun | null
+) {
+  if (status === "blocked") return `Provide the missing Terraform inputs for ${rootName}, then rerun the plan.`;
+  if (status === "error") return selectedRun?.mode ? `${selectedRun.mode} needs review before continuing.` : "Open the transcript to inspect the failure.";
+  if (status === "files_changed") return changedFiles ? `${changedFiles} file${changedFiles === 1 ? "" : "s"} changed in the repository.` : "Codex is updating the workspace.";
+  if (activeAction?.detail) return activeAction.detail;
+  if (status === "tool_running") return "Codex is using commands, search, or file tools. The transcript is still being captured.";
+  if (status === "thinking") return "The tmux-backed Codex session is active. Watch the file rail for repository changes.";
+  if (status === "complete") return "Switch back to the response when you want the final explanation.";
+  return "Use this mode when you care more about repository movement than every terminal line.";
+}
 
 function parseCodexPaneTurns(output: string): CodexPaneTurn[] {
   const turns: CodexPaneTurn[] = [];
@@ -2846,7 +3099,8 @@ function CommitPushModal({
   onInit,
   onCommit,
   onPush,
-  onCommitAndPush
+  onCommitAndPush,
+  onCreateBranch
 }: {
   git: GitWorkspaceStatus;
   loading: boolean;
@@ -2857,12 +3111,19 @@ function CommitPushModal({
   onCommit: (mode: "all" | "staged") => void;
   onPush: () => void;
   onCommitAndPush: () => void;
+  onCreateBranch: (branch: string) => void;
 }) {
   const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
   const changedCount = git.files.length;
-  const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0;
+  const detached = isDetachedGit(git);
+  const [detachedBranchName, setDetachedBranchName] = useState(defaultDetachedBranchName(git));
+  const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0 && !detached;
   const canCommit = git.initialized && changedCount > 0;
-  const canCommitAndPush = canCommit && Boolean(git.remoteUrl);
+  const canCommitAndPush = canCommit && Boolean(git.remoteUrl) && !detached;
+
+  useEffect(() => {
+    if (detached) setDetachedBranchName(defaultDetachedBranchName(git));
+  }, [detached, git.head?.shortHash]);
 
   return (
     <Modal
@@ -2882,6 +3143,16 @@ function CommitPushModal({
           </button>
         ) : (
           <>
+            {detached ? (
+              <DetachedHeadCallout
+                git={git}
+                branchName={detachedBranchName}
+                loading={loading}
+                onBranchNameChange={setDetachedBranchName}
+                onCreateBranch={() => onCreateBranch(detachedBranchName)}
+              />
+            ) : null}
+
             <div className="grid gap-3 rounded-[1.5rem] border border-gray-200 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
@@ -2931,6 +3202,154 @@ function CommitPushModal({
   );
 }
 
+function MergeBranchModal({
+  git,
+  loading,
+  onClose,
+  onMerge
+}: {
+  git: GitWorkspaceStatus;
+  loading: boolean;
+  onClose: () => void;
+  onMerge: (targetBranch: string, push: boolean) => void | Promise<void>;
+}) {
+  const sourceBranch = git.branch || "";
+  const [targetBranch, setTargetBranch] = useState(defaultMergeTargetBranch(git));
+  const [pushAfterMerge, setPushAfterMerge] = useState(false);
+  const detached = isDetachedGit(git);
+  const sameBranch = Boolean(sourceBranch && targetBranch.trim() === sourceBranch);
+  const disabled = loading || detached || !sourceBranch || sameBranch || !targetBranch.trim();
+
+  useEffect(() => {
+    setTargetBranch(defaultMergeTargetBranch(git));
+  }, [git.branch]);
+
+  return (
+    <Modal
+      title="Merge branch"
+      description="Merge the current workspace branch into a target branch."
+      icon="fa-code-merge"
+      size="xl"
+      onClose={onClose}
+    >
+      <div className="mt-5 grid gap-4">
+        <GitStatusStrip git={git} />
+
+        {detached ? (
+          <p className="rounded-[1.5rem] border border-[#F05032]/20 bg-[#F05032]/5 p-4 text-sm leading-6 text-gray-700">
+            This workspace is on a detached HEAD. Create a branch before merging.
+          </p>
+        ) : (
+          <div className="grid gap-4 rounded-[1.5rem] border border-gray-200 p-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl bg-gray-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">Source</p>
+                <p className="mt-2 truncate font-mono text-sm font-semibold text-gray-900">{sourceBranch || "unknown"}</p>
+              </div>
+              <label className="grid gap-2 text-sm font-medium text-gray-700">
+                Target branch
+                <input
+                  value={targetBranch}
+                  onChange={(event) => setTargetBranch(event.target.value)}
+                  className="h-12 rounded-2xl border border-gray-200 bg-white px-4 font-mono outline-none transition focus:border-black"
+                  placeholder="main"
+                />
+              </label>
+            </div>
+
+            {sameBranch ? (
+              <p className="rounded-2xl bg-amber-50 p-3 text-xs font-medium leading-5 text-amber-800">
+                Pick a different target branch. Source and target cannot be the same.
+              </p>
+            ) : (
+              <p className="text-xs leading-5 text-gray-500">
+                The workspace must be clean. A merge conflict will stop the operation so you can resolve it in the repository.
+              </p>
+            )}
+
+            <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+              <input
+                type="checkbox"
+                checked={pushAfterMerge}
+                onChange={(event) => setPushAfterMerge(event.target.checked)}
+              />
+              Push target branch after merge
+            </label>
+
+            <div className="flex justify-end gap-2">
+              <GitButton label="Cancel" disabled={loading} onClick={onClose} />
+              <GitButton
+                label="Merge"
+                tooltip="Merge the current branch into the target branch"
+                icon={loading ? "fa-circle-notch fa-spin" : "fa-code-merge"}
+                primary
+                disabled={disabled}
+                onClick={() => void onMerge(targetBranch.trim(), pushAfterMerge)}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function DetachedHeadCallout({
+  git,
+  branchName,
+  loading,
+  onBranchNameChange,
+  onCreateBranch
+}: {
+  git: GitWorkspaceStatus;
+  branchName: string;
+  loading: boolean;
+  onBranchNameChange: (value: string) => void;
+  onCreateBranch: () => void;
+}) {
+  const shortHash = git.head?.shortHash || "HEAD";
+  return (
+    <section className="rounded-[1.5rem] border border-[#F05032]/20 bg-[#F05032]/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-semibold text-gray-950">
+            <Icon name="fa-code-branch" className="text-[#F05032]" />
+            Detached HEAD
+          </p>
+          <p className="mt-1 text-xs leading-5 text-gray-600">
+            The workspace is checked out at <span className="font-mono font-semibold text-gray-900">{shortHash}</span>.
+            Create a branch from this commit before pushing.
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 font-mono text-[11px] font-semibold text-[#F05032]">
+          no branch
+        </span>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <label className="grid gap-1.5 text-xs font-semibold text-gray-700">
+          New branch name
+          <input
+            value={branchName}
+            onChange={(event) => onBranchNameChange(event.target.value)}
+            className="h-10 rounded-2xl border border-gray-200 bg-white px-3 font-mono text-sm text-black outline-none transition focus:border-[#F05032]"
+            placeholder="workspace-updates"
+          />
+        </label>
+        <div className="flex items-end">
+          <GitButton
+            label="Create branch"
+            tooltip="Create a branch at the current detached HEAD"
+            icon="fa-plus"
+            primary
+            disabled={loading || !branchName.trim()}
+            onClick={onCreateBranch}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function GitModal({
   git,
   history,
@@ -2946,6 +3365,7 @@ function GitModal({
   onUnstage,
   onCommit,
   onPush,
+  onCreateBranch,
   onStash,
   onStashApply,
   onStashDrop,
@@ -2970,6 +3390,7 @@ function GitModal({
   onUnstage: (paths: string[]) => void;
   onCommit: (mode: "all" | "staged") => void;
   onPush: () => void;
+  onCreateBranch: (branch: string) => void;
   onStash: (includeUntracked: boolean) => void;
   onStashApply: (index: number, mode: "apply" | "pop") => void;
   onStashDrop: (index: number) => void;
@@ -2989,9 +3410,15 @@ function GitModal({
   const [discardConfirmPath, setDiscardConfirmPath] = useState<string | null>(null);
   const [resetAllConfirm, setResetAllConfirm] = useState("");
   const [focusedGitPanel, setFocusedGitPanel] = useState<"history" | "changes" | "stashes" | null>(null);
+  const detached = isDetachedGit(git);
+  const [detachedBranchName, setDetachedBranchName] = useState(defaultDetachedBranchName(git));
   const dirty = git.initialized && !git.clean;
   const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
   const unstagedCount = git.files.filter((file) => Boolean(file.worktreeStatus)).length;
+
+  useEffect(() => {
+    if (detached) setDetachedBranchName(defaultDetachedBranchName(git));
+  }, [detached, git.head?.shortHash]);
 
   function startHistoryAction(kind: "checkout" | "branch" | "revert" | "reset", commit: GitCommit) {
     setPendingAction({ kind, commit });
@@ -3030,7 +3457,18 @@ function GitModal({
             Initialize Git repository
           </button>
         ) : (
-          <div className={`grid min-h-0 gap-4 lg:h-[calc(100vh-280px)] ${focusedGitPanel ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(360px,0.92fr)_minmax(460px,1.08fr)]"}`}>
+          <>
+          {detached ? (
+            <DetachedHeadCallout
+              git={git}
+              branchName={detachedBranchName}
+              loading={loading}
+              onBranchNameChange={setDetachedBranchName}
+              onCreateBranch={() => onCreateBranch(detachedBranchName)}
+            />
+          ) : null}
+
+          <div className={`grid min-h-0 gap-4 ${detached ? "lg:h-[calc(100vh-340px)]" : "lg:h-[calc(100vh-280px)]"} ${focusedGitPanel ? "lg:grid-cols-1" : "lg:grid-cols-[minmax(360px,0.92fr)_minmax(460px,1.08fr)]"}`}>
             {focusedGitPanel === null || focusedGitPanel === "history" ? (
             <section className="flex min-h-0 flex-col gap-3 rounded-[1.5rem] border border-gray-200 p-4 lg:h-full">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -3043,7 +3481,7 @@ function GitModal({
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <GitPanelFocusButton focused={focusedGitPanel === "history"} onClick={() => setFocusedGitPanel(focusedGitPanel === "history" ? null : "history")} />
-                  <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip="Push committed changes to the remote branch" icon="fa-arrow-up" disabled={loading || !git.remoteUrl} onClick={onPush} />
+                  <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip={detached ? "Create a branch from this detached HEAD before pushing" : "Push committed changes to the remote branch"} icon="fa-arrow-up" disabled={loading || !git.remoteUrl || detached} onClick={onPush} />
                 </div>
               </div>
 
@@ -3261,6 +3699,7 @@ function GitModal({
             </div>
             ) : null}
           </div>
+          </>
         )}
       </div>
     </Modal>
@@ -3269,10 +3708,11 @@ function GitModal({
 
 function GitStatusStrip({ git }: { git: GitWorkspaceStatus }) {
   const repository = git.repositoryName || "repository";
-  const branch = git.branch || "-";
-  const upstream = git.upstream || "no upstream";
+  const detached = isDetachedGit(git);
+  const branch = detached ? "Detached HEAD" : git.branch || "-";
+  const upstream = detached ? `HEAD ${git.head?.shortHash || ""}`.trim() : git.upstream || "no upstream";
   const changes = git.clean ? "clean" : `${git.files.length} changed`;
-  const sync = (git.ahead || git.behind) ? `ahead ${git.ahead || 0} / behind ${git.behind || 0}` : "synced";
+  const sync = detached ? "branch required" : (git.ahead || git.behind) ? `ahead ${git.ahead || 0} / behind ${git.behind || 0}` : "synced";
   const repositoryUrl = gitRepositoryWebUrl(git.remoteUrl);
 
   return (
@@ -3296,10 +3736,26 @@ function GitStatusStrip({ git }: { git: GitWorkspaceStatus }) {
       <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-gray-500">
         <span className="rounded-full bg-white px-2.5 py-1">upstream <span className="font-mono text-gray-800">{upstream}</span></span>
         <span className={`rounded-full px-2.5 py-1 font-semibold ${git.clean ? "bg-white text-gray-500" : "bg-[#F05032]/10 text-[#F05032]"}`}>{changes}</span>
-        <span className="rounded-full bg-white px-2.5 py-1">{sync}</span>
+        <span className={`rounded-full px-2.5 py-1 ${detached ? "bg-[#F05032]/10 text-[#F05032]" : "bg-white"}`}>{sync}</span>
       </div>
     </div>
   );
+}
+
+function isDetachedGit(git: GitWorkspaceStatus) {
+  return Boolean(git.initialized && git.branch === "detached");
+}
+
+function defaultDetachedBranchName(git: GitWorkspaceStatus) {
+  const shortHash = git.head?.shortHash || "head";
+  return `workspace-${shortHash}`;
+}
+
+function defaultMergeTargetBranch(git: GitWorkspaceStatus) {
+  const branch = git.branch || "";
+  if (branch && branch !== "main") return "main";
+  if (branch && branch !== "master") return "master";
+  return "main";
 }
 
 function gitRepositoryWebUrl(remoteUrl?: string) {
