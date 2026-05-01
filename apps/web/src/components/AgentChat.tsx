@@ -9,6 +9,7 @@ import { Icon } from "./Icon";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { Modal } from "./Modal";
 import { Toast } from "./Toast";
+import { CodexFocusSphere, type CodexFocusAction, type CodexFocusStatus } from "./CodexFocusSphere";
 
 const promptSuggestions = [
   "Run terraform fmt for my first resource.",
@@ -167,7 +168,9 @@ type CodexTmuxPane = {
   output: string;
 };
 type CodexControlKey = "up" | "down" | "enter" | "escape";
+type ChatDisplayMode = "transcript" | "focus";
 const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
+const CHAT_DISPLAY_MODE_STORAGE_KEY = "a2w.chat.displayMode.v1";
 const WORKSPACE_TREE_POLL_INTERVAL_MS = 5000;
 const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
 const CHAT_DELETE_EVENT = "a2w:chat-delete";
@@ -181,6 +184,24 @@ function scrollChatToBottom(element: HTMLDivElement | null) {
 function isNearScrollBottom(element: HTMLDivElement | null) {
   if (!element) return true;
   return element.scrollHeight - element.scrollTop - element.clientHeight < CHAT_BOTTOM_THRESHOLD_PX;
+}
+
+function readChatDisplayMode(): ChatDisplayMode {
+  if (typeof window === "undefined") return "transcript";
+  try {
+    return window.localStorage.getItem(CHAT_DISPLAY_MODE_STORAGE_KEY) === "focus" ? "focus" : "transcript";
+  } catch {
+    return "transcript";
+  }
+}
+
+function persistChatDisplayMode(mode: ChatDisplayMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_DISPLAY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Display mode is preference-only; the chat remains usable without persistence.
+  }
 }
 
 export function AgentChat({
@@ -251,6 +272,8 @@ export function AgentChat({
   const [codexPane, setCodexPane] = useState<CodexTmuxPane | null>(null);
   const [activeProviderConnection, setActiveProviderConnection] = useState(providerConnection);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("transcript");
+  const [displayModeReady, setDisplayModeReady] = useState(false);
   const [allowNetwork, setAllowNetwork] = useState(false);
   const [mode, setMode] = useState<SandboxMode>("terraform-fmt");
   const [applyConfirm, setApplyConfirm] = useState("");
@@ -270,6 +293,7 @@ export function AgentChat({
   const selectedSlashCommand = slashMatches[slashIndex] || null;
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
   const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
+  const codexTurns = useMemo(() => parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output]);
 
   const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
   const visibleMessages = useMemo(() => {
@@ -306,10 +330,37 @@ export function AgentChat({
       .at(-1) || null;
   }, [messages, plans]);
   const activeApprovalStatusPlan = approvalStatusPlan?.chatId === activeChatId ? approvalStatusPlan : null;
+  const focusModeActive = editorMode && displayMode === "focus";
+  const focusState = useMemo(() => buildCodexFocusState({
+    pane: codexPane,
+    turns: codexTurns,
+    loading,
+    pendingStatus,
+    missingVariables: missingRequiredVariables.length,
+    git,
+    root: selectedRoot,
+    selectedRun
+  }), [codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
 
   useEffect(() => {
     setChatList(chats);
   }, [chats]);
+
+  useEffect(() => {
+    setDisplayMode(readChatDisplayMode());
+    setDisplayModeReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!displayModeReady) return undefined;
+    persistChatDisplayMode(displayMode);
+    if (displayMode === "transcript") {
+      shouldAutoScrollRef.current = true;
+      const frame = window.requestAnimationFrame(() => scrollChatToBottom(scrollRef.current));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    return undefined;
+  }, [displayMode, displayModeReady]);
 
   useEffect(() => {
     function handleChatUpsert(event: Event) {
@@ -918,64 +969,106 @@ export function AgentChat({
           />
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
-            {activeChatId !== "new" && selectedRoot ? (
-              <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
-            ) : (
-              <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">New chat</p>
-                <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W</h1>
+          {focusModeActive ? null : (
+            <div className="flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
+              <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
+                {activeChatId !== "new" && selectedRoot ? (
+                  <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
+                ) : (
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">New chat</p>
+                    <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W</h1>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-
-          <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
-            {editorMode ? (
-              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
-                {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                {loading && !pendingStatus ? <ThinkingBubble /> : null}
-              </div>
-            ) : visibleMessages.length ? (
-              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                {visibleMessages.map((message) => (
-                  <MessageBubble
-                    key={message.id}
-                    message={message}
-                    onAction={handleMessageAction}
-                  />
-                ))}
-                {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                {loading && !pendingStatus ? <ThinkingBubble /> : null}
-              </div>
-            ) : (
-              pendingStatus ? <PendingBubble message={pendingStatus} centered /> : loading ? <ThinkingBubble centered /> : <EmptyChat onPick={setValue} />
-            )}
-          </div>
-
-          <form onSubmit={submit} className="h-[156px] shrink-0 border-t border-gray-100 bg-white px-3 py-2 sm:px-5">
-            <div className="mx-auto max-w-3xl">
-              <TerraformActionBar
-                plan={selectedPlan}
-                root={selectedRoot}
-                loading={loading}
-                applyDisabled={applyDisabled}
-                applyRuntimeEnabled={applyRuntimeEnabled}
-                onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
-                onRuns={() => setRunsOpen(true)}
-                onVariables={openVariables}
-                onDiff={openDiff}
-                onGit={openGit}
-                onCommitPush={openCommitPush}
-                onApprove={() => selectedPlan && void approve(selectedPlan)}
-                onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
-                missingVariables={missingRequiredVariables.length}
-              />
+              {editorMode ? <ChatDisplayModeToggle mode={displayMode} onChange={setDisplayMode} /> : null}
             </div>
+          )}
 
-            <div className="relative mx-auto mt-2 max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5">
+          {focusModeActive ? (
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <CodexFocusSphere
+                status={focusState.status}
+                statusLabel={focusState.statusLabel}
+                detail={focusState.detail}
+                rootName={focusState.rootName}
+                changedFiles={focusState.changedFiles}
+                additions={focusState.additions}
+                deletions={focusState.deletions}
+                actions={focusState.actions}
+                onShowTranscript={() => setDisplayMode("transcript")}
+              />
+              <div className="absolute left-2 top-2 z-40 sm:left-4 sm:top-4">
+                <TerraformActionBar
+                  plan={selectedPlan}
+                  root={selectedRoot}
+                  loading={loading}
+                  applyDisabled={applyDisabled}
+                  applyRuntimeEnabled={applyRuntimeEnabled}
+                  onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
+                  onRuns={() => setRunsOpen(true)}
+                  onVariables={openVariables}
+                  onDiff={openDiff}
+                  onGit={openGit}
+                  onCommitPush={openCommitPush}
+                  onApprove={() => selectedPlan && void approve(selectedPlan)}
+                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  missingVariables={missingRequiredVariables.length}
+                  placement="focus"
+                />
+              </div>
+            </div>
+          ) : (
+            <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
+              {editorMode ? (
+                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                  <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
+                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
+                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
+                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
+                </div>
+              ) : visibleMessages.length ? (
+                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                  {visibleMessages.map((message) => (
+                    <MessageBubble
+                      key={message.id}
+                      message={message}
+                      onAction={handleMessageAction}
+                    />
+                  ))}
+                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
+                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
+                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
+                </div>
+              ) : (
+                pendingStatus ? <PendingBubble message={pendingStatus} centered /> : loading ? <ThinkingBubble centered /> : <EmptyChat onPick={setValue} />
+              )}
+            </div>
+          )}
+
+          <form onSubmit={submit} className={`shrink-0 px-3 py-2 sm:px-5 ${focusModeActive ? "h-[144px] border-t-0 bg-[#fbfbf9]" : "h-[168px] border-t border-gray-100 bg-white"}`}>
+            {!focusModeActive ? (
+              <div className="mx-auto max-w-3xl">
+                <TerraformActionBar
+                  plan={selectedPlan}
+                  root={selectedRoot}
+                  loading={loading}
+                  applyDisabled={applyDisabled}
+                  applyRuntimeEnabled={applyRuntimeEnabled}
+                  onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
+                  onRuns={() => setRunsOpen(true)}
+                  onVariables={openVariables}
+                  onDiff={openDiff}
+                  onGit={openGit}
+                  onCommitPush={openCommitPush}
+                  onApprove={() => selectedPlan && void approve(selectedPlan)}
+                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  missingVariables={missingRequiredVariables.length}
+                />
+              </div>
+            ) : null}
+
+            <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${focusModeActive ? "mt-0" : "mt-2"}`}>
               {codexPicker ? (
                 <CodexChoicePicker picker={codexPicker} chatId={activeChatId} onPane={setCodexPane} onKey={(key) => sendCodexControlKey(key, { requirePicker: true })} />
               ) : slashOpen ? (
@@ -1026,7 +1119,7 @@ export function AgentChat({
                       event.currentTarget.form?.requestSubmit();
                     }
                   }}
-                  className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-black outline-none"
+                  className="max-h-40 min-h-12 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-6 text-black outline-none"
                   placeholder={codexStagedInput ? "Submitting queued Codex input..." : codexBusy ? "Codex is working..." : "Message A2W..."}
                 />
                 <button
@@ -1183,6 +1276,27 @@ export function AgentChat({
 
       <Toast message={toast} />
     </>
+  );
+}
+
+function ChatDisplayModeToggle({ mode, onChange }: { mode: ChatDisplayMode; onChange: (mode: ChatDisplayMode) => void }) {
+  const focus = mode === "focus";
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(focus ? "transcript" : "focus")}
+      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition ${
+        focus
+          ? "border-black bg-black text-white hover:bg-gray-800"
+          : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-black"
+      }`}
+      aria-label={focus ? "Show response" : "Show focus mode"}
+      aria-pressed={focus}
+      title={focus ? "Show Codex transcript" : "Show focus mode"}
+    >
+      <Icon name={focus ? "fa-message" : "fa-circle-nodes"} />
+      <span className="hidden sm:inline">{focus ? "Response" : "Focus"}</span>
+    </button>
   );
 }
 
@@ -1748,7 +1862,8 @@ function TerraformActionBar({
   onCommitPush,
   onApprove,
   onSandbox,
-  missingVariables
+  missingVariables,
+  placement = "input"
 }: {
   plan: InfraPlan | null;
   root: TerraformRoot | null;
@@ -1764,11 +1879,13 @@ function TerraformActionBar({
   onApprove: () => void;
   onSandbox: (mode: SandboxMode) => void;
   missingVariables: number;
+  placement?: "input" | "focus";
 }) {
   const [openGroup, setOpenGroup] = useState<"terraform" | "git" | null>(null);
   const approved = Boolean(plan?.status.includes("approved"));
   const canMutate = approved && !applyDisabled && applyRuntimeEnabled;
   const disabled = loading || !plan;
+  const focusPlacement = placement === "focus";
 
   function run(action: () => void) {
     setOpenGroup(null);
@@ -1776,9 +1893,15 @@ function TerraformActionBar({
   }
 
   return (
-    <div className="relative flex min-h-10 items-start justify-between gap-4">
+    <div className={`relative flex min-h-10 items-start ${focusPlacement ? "flex-col gap-2" : "justify-between gap-4"}`}>
       {openGroup ? (
-        <div className={`absolute bottom-full z-20 mb-2 w-64 rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10 ${openGroup === "terraform" ? "left-0" : "right-0"}`}>
+        <div
+          className={`absolute z-20 w-64 rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10 ${
+            focusPlacement
+              ? "left-full top-0 ml-2"
+              : `bottom-full mb-2 ${openGroup === "terraform" ? "left-0" : "right-0"}`
+          }`}
+        >
           {openGroup === "terraform" ? (
             <div className="grid gap-1">
               <ActionMenuButton icon="fa-code-branch" label="View plan" disabled={disabled} onClick={() => run(onViewPlan)} />
@@ -1807,10 +1930,10 @@ function TerraformActionBar({
         </div>
       ) : null}
 
-      <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-[#fbfbf9] p-1">
+      <div className={`flex items-center gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
         <GroupTrigger icon={<TerraformMark />} label="Terraform" active={openGroup === "terraform"} onClick={() => setOpenGroup(openGroup === "terraform" ? null : "terraform")} />
       </div>
-      <div className="flex items-center justify-end gap-1.5 rounded-full border border-gray-200 bg-[#fbfbf9] p-1">
+      <div className={`flex items-center justify-end gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
         <GroupTrigger icon={<Icon name="fa-brands fa-git-alt" className="text-[13px] text-[#F05032]" />} label="Git" active={openGroup === "git"} onClick={() => setOpenGroup(openGroup === "git" ? null : "git")} />
       </div>
     </div>
@@ -2292,6 +2415,98 @@ type CodexPaneChoicePicker = {
     description?: string;
   }>;
 };
+
+function buildCodexFocusState({
+  pane,
+  turns,
+  loading,
+  pendingStatus,
+  missingVariables,
+  git,
+  root,
+  selectedRun
+}: {
+  pane: CodexTmuxPane | null;
+  turns: CodexPaneTurn[];
+  loading: boolean;
+  pendingStatus: string | null;
+  missingVariables: number;
+  git: GitWorkspaceStatus;
+  root: TerraformRoot | null;
+  selectedRun?: SandboxRun | null;
+}): {
+  status: CodexFocusStatus;
+  statusLabel: string;
+  detail: string;
+  rootName: string;
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  actions: CodexFocusAction[];
+} {
+  const latestTurn = turns.at(-1);
+  const latestActions = latestTurn?.actions || [];
+  const recentActions = latestActions.slice(-18);
+  const diffStats = summarizeDiffStats(git.files);
+  const activeAction = recentActions.at(-1);
+  const running = Boolean(loading || pendingStatus || (pane?.running && !pane.ready && !pane.viewingTranscript));
+  const rootName = root?.name || root?.path.split("/").filter(Boolean).at(-1) || "workspace";
+  const runFailed = selectedRun?.status === "failed";
+  let status: CodexFocusStatus = "idle";
+
+  if (runFailed || /failed|error/i.test(pendingStatus || "")) status = "error";
+  else if (missingVariables > 0) status = "blocked";
+  else if (running && activeAction && activeAction.kind !== "thinking") status = "tool_running";
+  else if (running) status = "thinking";
+  else if (git.files.length > 0) status = "files_changed";
+  else if (pane?.ready || latestTurn?.response) status = "complete";
+
+  const statusLabel = focusStatusLabel(status, pendingStatus, activeAction, missingVariables);
+  const detail = focusStatusDetail(status, git.files.length, rootName, activeAction, selectedRun);
+
+  return {
+    status,
+    statusLabel,
+    detail,
+    rootName,
+    changedFiles: git.files.length,
+    additions: diffStats.additions,
+    deletions: diffStats.deletions,
+    actions: recentActions.map((action) => ({
+      kind: action.kind,
+      label: action.label,
+      detail: action.detail
+    }))
+  };
+}
+
+function focusStatusLabel(status: CodexFocusStatus, pendingStatus: string | null, activeAction: CodexPaneAction | undefined, missingVariables: number) {
+  if (status === "blocked") return `${missingVariables} input${missingVariables === 1 ? "" : "s"} needed`;
+  if (status === "error") return "Attention needed";
+  if (pendingStatus) return pendingStatus.replace(/\.\.\.$/, "");
+  if (status === "tool_running") return activeAction?.kind === "search" ? "Searching" : "Running tools";
+  if (status === "files_changed") return "Workspace changed";
+  if (status === "thinking") return "Codex is thinking";
+  if (status === "complete") return "Codex is ready";
+  return "Codex focus";
+}
+
+function focusStatusDetail(
+  status: CodexFocusStatus,
+  changedFiles: number,
+  rootName: string,
+  activeAction: CodexPaneAction | undefined,
+  selectedRun?: SandboxRun | null
+) {
+  if (status === "blocked") return `Provide the missing Terraform inputs for ${rootName}, then rerun the plan.`;
+  if (status === "error") return selectedRun?.mode ? `${selectedRun.mode} needs review before continuing.` : "Open the transcript to inspect the failure.";
+  if (status === "files_changed") return changedFiles ? `${changedFiles} file${changedFiles === 1 ? "" : "s"} changed in the repository.` : "Codex is updating the workspace.";
+  if (activeAction?.detail) return activeAction.detail;
+  if (status === "tool_running") return "Codex is using commands, search, or file tools. The transcript is still being captured.";
+  if (status === "thinking") return "The tmux-backed Codex session is active. Watch the file rail for repository changes.";
+  if (status === "complete") return "Switch back to the response when you want the final explanation.";
+  return "Use this mode when you care more about repository movement than every terminal line.";
+}
 
 function parseCodexPaneTurns(output: string): CodexPaneTurn[] {
   const turns: CodexPaneTurn[] = [];
