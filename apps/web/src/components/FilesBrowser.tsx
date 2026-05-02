@@ -24,6 +24,7 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => defaultExpanded(initialFiles));
+  const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
   const tree = useMemo(() => buildTree(files), [files]);
   const selectedFile = files.find((file) => file.path === selected);
 
@@ -68,32 +69,44 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
 
   const shellClass = embedded
     ? "motion-enter grid min-h-[62vh] gap-5 lg:grid-cols-[340px_minmax(0,1fr)]"
-    : "motion-enter grid h-full min-h-0 w-full bg-white lg:grid-cols-[360px_minmax(0,1fr)]";
+    : "motion-enter relative grid h-full min-h-0 w-full bg-white lg:grid-cols-[360px_minmax(0,1fr)]";
   const panelClass = embedded
     ? "flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-sm"
-    : "flex min-h-0 flex-col overflow-hidden border-b border-gray-200 bg-white lg:border-b-0 lg:border-r";
+    : "hidden min-h-0 flex-col overflow-hidden border-b border-gray-200 bg-white lg:flex lg:border-b-0 lg:border-r";
   const previewClass = embedded
     ? "flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-gray-200 bg-white shadow-sm"
     : "flex min-h-0 flex-col overflow-hidden bg-white";
   const treeScrollClass = embedded ? "max-h-[52vh]" : "flex-1";
   const codeScrollClass = embedded ? "max-h-[52vh]" : "flex-1";
 
-  return (
-    <section className={shellClass}>
-      <div className={panelClass}>
+  function renderTreePane(className: string, showClose = false) {
+    return (
+      <div className={className}>
         <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Project</p>
             <h2 className="mt-1 text-xl font-semibold tracking-[-0.03em]">Files</h2>
           </div>
-          <button
-            type="button"
-            onClick={refresh}
-            className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 text-gray-700 transition hover:border-gray-300"
-            aria-label="Refresh files"
-          >
-            <Icon name="fa-rotate" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={refresh}
+              className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 text-gray-700 transition hover:border-gray-300"
+              aria-label="Refresh files"
+            >
+              <Icon name="fa-rotate" />
+            </button>
+            {showClose ? (
+              <button
+                type="button"
+                onClick={() => setMobileTreeOpen(false)}
+                className="grid h-10 w-10 place-items-center rounded-full border border-gray-200 text-gray-700 transition hover:border-gray-300"
+                aria-label="Close files"
+              >
+                <Icon name="fa-xmark" />
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <div className="border-b border-gray-100 px-5 py-3">
@@ -110,7 +123,10 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
               expanded={expanded}
               selected={selected}
               onToggle={toggle}
-              onSelect={setSelected}
+              onSelect={(path) => {
+                setSelected(path);
+                setMobileTreeOpen(false);
+              }}
               depth={0}
             />
           ) : (
@@ -118,6 +134,12 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
           )}
         </div>
       </div>
+    );
+  }
+
+  return (
+    <section className={shellClass}>
+      {renderTreePane(panelClass)}
 
       <div className={previewClass}>
         <div className="flex flex-col justify-between gap-4 border-b border-gray-200 px-5 py-4 sm:flex-row sm:items-start">
@@ -130,11 +152,23 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
               </p>
             ) : null}
           </div>
-          {selected ? (
-            <span className="w-fit rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-600">
-              {fileExtension(selected) || "file"}
-            </span>
-          ) : null}
+          <div className="flex shrink-0 items-center gap-2">
+            {!embedded ? (
+              <button
+                type="button"
+                onClick={() => setMobileTreeOpen(true)}
+                className="inline-flex h-9 items-center gap-2 rounded-full border border-gray-200 px-3 text-xs font-semibold text-gray-700 transition hover:border-gray-300 lg:hidden"
+              >
+                <Icon name="fa-folder-tree" />
+                Files
+              </button>
+            ) : null}
+            {selected ? (
+              <span className="w-fit rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-600">
+                {fileExtension(selected) || "file"}
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <div className={`thin-scrollbar min-h-0 overflow-auto bg-[#111] ${codeScrollClass}`}>
@@ -147,6 +181,15 @@ export function FilesBrowser({ initialFiles, embedded = false }: { initialFiles:
           )}
         </div>
       </div>
+
+      {!embedded && mobileTreeOpen ? (
+        <div className="absolute inset-0 z-40 lg:hidden">
+          <button type="button" className="absolute inset-0 bg-black/10 backdrop-blur-[1px]" aria-label="Close files" onClick={() => setMobileTreeOpen(false)} />
+          <div className="absolute inset-y-0 left-0 w-[min(88vw,340px)]">
+            {renderTreePane("flex h-full min-h-0 flex-col overflow-hidden border-r border-gray-200 bg-white shadow-2xl shadow-black/15", true)}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

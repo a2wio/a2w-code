@@ -275,7 +275,7 @@ export function CodexFocusSphere({
       <FocusGlow status={status} />
       <div
         ref={mountRef}
-        className={`pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 ${minimal ? "top-[42%]" : "top-[43%]"}`}
+        className={`pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 ${minimal ? "top-[42%]" : "top-[46%]"}`}
         style={{
           width: minimal ? "min(72vw, 52vh, 650px)" : "min(76vw, 56vh, 720px)",
           height: minimal ? "min(72vw, 52vh, 650px)" : "min(76vw, 56vh, 720px)"
@@ -283,10 +283,7 @@ export function CodexFocusSphere({
       />
 
       {minimal ? null : (
-        <>
-          <ActionNotificationReel actions={actions} />
-          <SandboxActionReel actions={sandboxActions} />
-        </>
+        <ActionResponseSwitcher codexActions={actions} sandboxActions={sandboxActions} />
       )}
 
       <div className={`absolute inset-x-4 z-10 mx-auto grid max-w-3xl gap-2 sm:inset-x-8 ${minimal ? "top-[63%]" : "bottom-4 sm:bottom-5"}`}>
@@ -385,6 +382,110 @@ function FocusMetric({ icon, label, tone }: { icon: string; label: string; tone?
   );
 }
 
+type ActionResponsePane = "codex" | "sandbox";
+
+function ActionResponseSwitcher({
+  codexActions,
+  sandboxActions
+}: {
+  codexActions: CodexFocusAction[];
+  sandboxActions: CodexFocusAction[];
+}) {
+  const [pane, setPane] = useState<ActionResponsePane>("codex");
+  const touchStartXRef = useRef<number | null>(null);
+  const hasCodex = codexActions.length > 0;
+  const sandboxAction = sandboxActions.at(-1);
+  const hasSandbox = Boolean(sandboxAction);
+  const codexSignature = codexActions.map((action) => `${action.kind}:${action.label}:${action.detail || ""}`).join("|");
+  const sandboxSignature = sandboxAction ? `${sandboxAction.kind}:${sandboxAction.label}:${sandboxAction.detail || ""}:${sandboxAction.output || ""}` : "";
+  const lastCodexSignatureRef = useRef(codexSignature);
+  const lastSandboxSignatureRef = useRef(sandboxSignature);
+  const [sandboxExpanded, setSandboxExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!hasCodex && hasSandbox) setPane("sandbox");
+    if (!hasSandbox && hasCodex) setPane("codex");
+  }, [hasCodex, hasSandbox]);
+
+  useEffect(() => {
+    if (sandboxSignature && sandboxSignature !== lastSandboxSignatureRef.current) {
+      setPane("sandbox");
+      setSandboxExpanded(false);
+    } else if (codexSignature && codexSignature !== lastCodexSignatureRef.current) {
+      setPane("codex");
+    }
+    lastCodexSignatureRef.current = codexSignature;
+    lastSandboxSignatureRef.current = sandboxSignature;
+  }, [codexSignature, sandboxSignature]);
+
+  if (!hasCodex && !hasSandbox) return null;
+
+  const activePane = pane === "sandbox" && hasSandbox ? "sandbox" : hasCodex ? "codex" : "sandbox";
+  const panes: ActionResponsePane[] = [
+    ...(hasCodex ? ["codex" as const] : []),
+    ...(hasSandbox ? ["sandbox" as const] : [])
+  ];
+  const canSwitch = panes.length > 1;
+
+  function switchPane(direction: 1 | -1) {
+    if (!canSwitch) return;
+    const currentIndex = panes.indexOf(activePane);
+    const nextIndex = (currentIndex + direction + panes.length) % panes.length;
+    setPane(panes[nextIndex]);
+  }
+
+  function onTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    touchStartXRef.current = event.touches[0]?.clientX ?? null;
+  }
+
+  function onTouchEnd(event: React.TouchEvent<HTMLDivElement>) {
+    const startX = touchStartXRef.current;
+    touchStartXRef.current = null;
+    const endX = event.changedTouches[0]?.clientX;
+    if (startX === null || endX === undefined) return;
+    const delta = endX - startX;
+    if (Math.abs(delta) < 42) return;
+    switchPane(delta < 0 ? 1 : -1);
+  }
+
+  return (
+    <div
+      className={`absolute right-3 top-16 z-20 transition-[width] duration-300 sm:right-4 sm:top-16 ${
+        activePane === "sandbox" && sandboxExpanded ? "w-[min(42rem,calc(100%-1.5rem))]" : "w-[min(22.5rem,calc(100%-1.5rem))]"
+      }`}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+    >
+      {canSwitch ? (
+        <div className="mb-1.5 flex items-center justify-center gap-1">
+          {panes.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setPane(item)}
+              className={`h-6 rounded-full border px-2 text-[10px] font-semibold uppercase tracking-[0.12em] backdrop-blur transition ${
+                activePane === item
+                  ? "border-gray-300 bg-white/80 text-gray-700 shadow-sm shadow-black/[0.03]"
+                  : "border-white/40 bg-white/20 text-gray-400 hover:bg-white/45 hover:text-gray-600"
+              }`}
+            >
+              {item === "codex" ? "Codex" : "Sandbox"}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="overflow-hidden rounded-[1.6rem]">
+        {activePane === "sandbox" && sandboxAction ? (
+          <SandboxActionCard action={sandboxAction} expanded={sandboxExpanded} onExpandedChange={setSandboxExpanded} />
+        ) : (
+          <ActionNotificationReel actions={codexActions} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -444,78 +545,77 @@ function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
   if (!visibleActions.length) return null;
 
   return (
-    <div className="absolute right-4 top-6 z-20 w-[min(22.5rem,calc(100%-0.5rem))]">
-      {/* <NotificationFadeEdge edge="top" />
-      <NotificationFadeEdge edge="bottom" /> */}
-      <div
-        ref={scrollRef}
-        onScroll={updateFocusedNotification}
-        className="no-scrollbar relative z-10 max-h-[8.6rem] overflow-y-auto overflow-x-hidden transition-all duration-200"
-        aria-live="polite"
-      >
-        <div className="flex min-h-full flex-col p-2">
-          {visibleActions.map((action, index) => (
-            <div
-              key={`${action.kind}-${action.label}-${action.detail || ""}-${index}`}
-              ref={(element) => {
-                itemRefs.current[index] = element;
-              }}
-              className={`motion-enter relative flex min-h-10 origin-center items-center gap-2 rounded-2xl border px-3 py-2 text-xs backdrop-blur-2xl ring-1 transition duration-300 ease-out ${index > 0 ? "-mt-2" : ""} ${
-                index === focusedIndex
-                  ? "scale-[1.065] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
-                  : "scale-[0.975] border-white/35 bg-white/[0.12] text-gray-400 ring-white/15"
-              }`}
-              style={{ zIndex: index === focusedIndex ? 80 : Math.max(1, 40 - Math.abs(index - focusedIndex)) }}
-            >
-              <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/40 text-[10px] transition-colors ${index === focusedIndex ? "text-gray-500" : "text-gray-300"}`}>
-                <Icon name={focusActionIcon(action.kind)} />
-              </span>
-              <span className="min-w-0 flex-1 truncate">
-                <span className={`font-semibold transition-colors ${index === focusedIndex ? "text-gray-700" : "text-gray-500"}`}>{action.label}</span>
-                {action.detail ? <span className={`ml-1 font-mono text-[11px] transition-colors ${index === focusedIndex ? "text-gray-400" : "text-gray-300"}`}>{action.detail}</span> : null}
-              </span>
-            </div>
-          ))}
-        </div>
+    <div
+      ref={scrollRef}
+      onScroll={updateFocusedNotification}
+      className="no-scrollbar relative z-10 max-h-[8.6rem] overflow-y-auto overflow-x-hidden transition-all duration-200"
+      aria-live="polite"
+    >
+      <div className="flex min-h-full flex-col p-2">
+        {visibleActions.map((action, index) => (
+          <div
+            key={`${action.kind}-${action.label}-${action.detail || ""}-${index}`}
+            ref={(element) => {
+              itemRefs.current[index] = element;
+            }}
+            className={`motion-enter relative flex min-h-10 origin-center items-center gap-2 rounded-2xl border px-3 py-2 text-xs backdrop-blur-2xl ring-1 transition duration-300 ease-out ${index > 0 ? "-mt-2" : ""} ${
+              index === focusedIndex
+                ? "scale-[1.065] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
+                : "scale-[0.975] border-white/35 bg-white/[0.12] text-gray-400 ring-white/15"
+            }`}
+            style={{ zIndex: index === focusedIndex ? 80 : Math.max(1, 40 - Math.abs(index - focusedIndex)) }}
+          >
+            <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/40 text-[10px] transition-colors ${index === focusedIndex ? "text-gray-500" : "text-gray-300"}`}>
+              <Icon name={focusActionIcon(action.kind)} />
+            </span>
+            <span className="min-w-0 flex-1 truncate">
+              <span className={`font-semibold transition-colors ${index === focusedIndex ? "text-gray-700" : "text-gray-500"}`}>{action.label}</span>
+              {action.detail ? <span className={`ml-1 font-mono text-[11px] transition-colors ${index === focusedIndex ? "text-gray-400" : "text-gray-300"}`}>{action.detail}</span> : null}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function SandboxActionReel({ actions }: { actions: CodexFocusAction[] }) {
+function SandboxActionCard({
+  action,
+  expanded,
+  onExpandedChange
+}: {
+  action: CodexFocusAction;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean | ((current: boolean) => boolean)) => void;
+}) {
   const [hovered, setHovered] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const action = actions.at(-1);
   const actionSignature = action ? `${action.label}:${action.detail || ""}:${action.output || ""}` : "";
 
   useEffect(() => {
     setHovered(false);
-    setExpanded(false);
+    onExpandedChange(false);
   }, [actionSignature]);
-
-  if (!action) return null;
 
   const hasOutput = Boolean(action.output?.trim());
   const description = hasOutput && hovered ? expanded ? "click to collapse output" : "click to explore output" : action.detail;
 
   return (
-    <div className={`absolute bottom-4 left-4 z-20 transition-[width] duration-300 sm:bottom-5 sm:left-5 ${expanded ? "w-[min(42rem,calc(100%-2rem))]" : "w-[min(23.5rem,calc(100%-2rem))]"}`}>
-      <div
-        role={hasOutput ? "button" : undefined}
-        tabIndex={hasOutput ? 0 : undefined}
-        onClick={() => hasOutput && setExpanded((current) => !current)}
-        onKeyDown={(event) => {
-          if (!hasOutput || (event.key !== "Enter" && event.key !== " ")) return;
-          event.preventDefault();
-          setExpanded((current) => !current);
-        }}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        className={`motion-enter relative min-h-[5.75rem] origin-left rounded-2xl px-3.5 py-3 text-xs text-gray-700 transition ${hasOutput ? "cursor-pointer hover:bg-white/[0.18]" : ""}`}
-        aria-live="polite"
-        aria-expanded={hasOutput ? expanded : undefined}
-      >
-        <div className="flex items-start gap-2">
+    <div
+      role={hasOutput ? "button" : undefined}
+      tabIndex={hasOutput ? 0 : undefined}
+      onClick={() => hasOutput && onExpandedChange((current) => !current)}
+      onKeyDown={(event) => {
+        if (!hasOutput || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        onExpandedChange((current) => !current);
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={`motion-enter relative min-h-[5.75rem] origin-left rounded-2xl px-3.5 py-3 text-xs text-gray-700 transition ${hasOutput ? "cursor-pointer hover:bg-white/[0.18]" : ""}`}
+      aria-live="polite"
+      aria-expanded={hasOutput ? expanded : undefined}
+    >
+      <div className="flex items-start gap-2">
         <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/40 text-[11px] text-gray-600">
           <Icon name={focusActionIcon(action.kind)} />
         </span>
@@ -524,13 +624,12 @@ function SandboxActionReel({ actions }: { actions: CodexFocusAction[] }) {
           <span className="mt-1 block text-sm font-semibold leading-5 text-gray-800">{action.label}</span>
           {description ? <span className={`mt-1 block max-h-12 overflow-hidden break-words text-[11px] leading-5 ${hovered && hasOutput ? "font-semibold text-gray-600" : "font-mono text-gray-500"}`}>{description}</span> : null}
         </span>
-        </div>
-        {expanded && hasOutput ? (
-          <pre className="thin-scrollbar mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-2xl bg-black/[0.86] p-3 font-mono text-[11px] leading-5 text-gray-100 shadow-inner shadow-black/20">
-            {action.output}
-          </pre>
-        ) : null}
       </div>
+      {expanded && hasOutput ? (
+        <pre className="thin-scrollbar mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-2xl bg-black/[0.86] p-3 font-mono text-[11px] leading-5 text-gray-100 shadow-inner shadow-black/20">
+          {action.output}
+        </pre>
+      ) : null}
     </div>
   );
 }
