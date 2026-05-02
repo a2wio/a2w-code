@@ -6,7 +6,8 @@ import { errorJson, json } from "@/lib/http";
 import { runSandbox } from "@/lib/sandbox";
 import { validateTerraformRootPath } from "@/lib/terraform-roots";
 import { discoverTerraformVariables } from "@/lib/terraform-variables";
-import type { MessageAction } from "@/lib/types";
+import { chatMode, workspaceMode } from "@/lib/workspace-mode";
+import type { MessageAction, SandboxRun } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -19,9 +20,11 @@ export async function POST(request: NextRequest) {
     const planId = String(body.planId || "");
     const rootPath = body.rootPath ? validateTerraformRootPath(String(body.rootPath)) : undefined;
     const chatId = String(body.chatId || "").trim();
-    if (chatId && !context.data.chats.some((item) => item.id === chatId && item.workspaceId === context.workspace.id)) {
+    const chat = chatId ? context.data.chats.find((item) => item.id === chatId && item.workspaceId === context.workspace.id) : undefined;
+    if (chatId && !chat) {
       return errorJson("Chat not found.", 404);
     }
+    const activeMode = chat ? chatMode(chat) : workspaceMode(context.workspace);
 
     if (mode === "terraform-apply" || mode === "terraform-destroy") {
       const plan = context.data.plans.find((item) => item.id === planId && item.workspaceId === context.workspace.id);
@@ -58,6 +61,7 @@ export async function POST(request: NextRequest) {
 
     const run = await runSandbox({
       workspaceId: context.workspace.id,
+      workspaceMode: activeMode,
       planId,
       rootPath,
       mode,
@@ -80,8 +84,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function parseMode(mode: unknown): "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy" {
+function parseMode(mode: unknown): SandboxRun["mode"] {
   if (mode === "terraform-fmt" || mode === "validate" || mode === "terraform-plan" || mode === "terraform-apply" || mode === "terraform-destroy") return mode;
+  if (mode === "npm-install" || mode === "npm-audit" || mode === "npm-lint" || mode === "npm-test" || mode === "npm-build") return mode;
   return "validate";
 }
 
@@ -90,7 +95,7 @@ async function appendSandboxMessage(input: {
   planId: string;
   chatId?: string;
   rootPath?: string;
-  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+  mode: SandboxRun["mode"];
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   output: string;
   planSummary?: import("@/lib/types").TerraformPlanSummary;
@@ -105,19 +110,35 @@ async function appendSandboxMessage(input: {
         ? "Terraform plan"
         : input.mode === "terraform-fmt"
           ? "Terraform fmt"
+          : input.mode === "npm-install"
+            ? "NPM install"
+          : input.mode === "npm-audit"
+            ? "NPM audit"
+          : input.mode === "npm-lint"
+            ? "NPM lint"
+          : input.mode === "npm-test"
+            ? "NPM test"
+          : input.mode === "npm-build"
+            ? "NPM build"
           : "Sandbox validation";
 
   await updateData((data) => {
     const plan = data.plans.find((item) => item.id === input.planId && item.workspaceId === input.workspaceId);
-    const chatId = input.chatId && data.chats.some((item) => item.id === input.chatId && item.workspaceId === input.workspaceId)
-      ? input.chatId
+    const chat = input.chatId
+      ? data.chats.find((item) => item.id === input.chatId && item.workspaceId === input.workspaceId)
+      : undefined;
+    const workspace = data.workspaces.find((item) => item.id === input.workspaceId);
+    const messageMode = chat ? chatMode(chat) : workspaceMode(workspace);
+    const chatId = chat
+      ? chat.id
       : plan?.chatId;
     data.messages.push({
       id: randomUUID(),
       workspaceId: input.workspaceId,
+      mode: messageMode,
       chatId,
       role: "assistant",
-      planId: input.planId,
+      planId: input.planId || undefined,
       actions: sandboxMessageActions(input),
       content: [
         `${label} ${input.status}.`,
@@ -148,7 +169,7 @@ async function appendSandboxMessage(input: {
 function sandboxMessageActions(input: {
   planId: string;
   rootPath?: string;
-  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+  mode: SandboxRun["mode"];
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   missingVariables?: Array<{ name: string }>;
 }): MessageAction[] {
@@ -159,7 +180,7 @@ function sandboxMessageActions(input: {
       label: "Open inputs",
       kind: "open_inputs",
       rootPath: input.rootPath,
-      planId: input.planId
+      planId: input.planId || undefined
     });
   }
   if (input.mode === "terraform-plan") {
@@ -168,7 +189,7 @@ function sandboxMessageActions(input: {
       label: "View run history",
       kind: "open_runs",
       rootPath: input.rootPath,
-      planId: input.planId
+      planId: input.planId || undefined
     });
   }
   if (input.status === "failed") {
@@ -177,7 +198,7 @@ function sandboxMessageActions(input: {
       label: "Browse files",
       kind: "open_files",
       rootPath: input.rootPath,
-      planId: input.planId
+      planId: input.planId || undefined
     });
   }
   return actions;

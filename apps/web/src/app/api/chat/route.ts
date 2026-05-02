@@ -10,7 +10,8 @@ import { errorJson, json } from "@/lib/http";
 import { materializePlanFiles } from "@/lib/materialize";
 import { generatePlan } from "@/lib/planner";
 import { listTerraformRoots, terraformRootPathsFromPlan, validateTerraformRootPath } from "@/lib/terraform-roots";
-import type { AppData, Chat, InfraPlan, Message } from "@/lib/types";
+import { chatMode, normalizeWorkspaceMode, workspaceMode } from "@/lib/workspace-mode";
+import type { AppData, Chat, InfraPlan, Message, WorkspaceMode } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -21,13 +22,14 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const message = String(body.message || "").trim();
     if (!message) return errorJson("Message is required.", 400);
+    const mode = normalizeWorkspaceMode(body.mode || workspaceMode(context.workspace));
     const selectedRootPath = body.rootPath ? validateTerraformRootPath(String(body.rootPath)) : context.workspace.selectedTerraformRoot;
-    const chat = await ensureChat(context.workspace.id, String(body.chatId || ""), message);
+    const chat = await ensureChat(context.workspace.id, String(body.chatId || ""), message, mode);
     const codexEnabled = codexBackendEnabled(context.workspace);
 
     const commandResponse = codexEnabled && message.startsWith("/")
       ? null
-      : await handleFastChatPath(message, chat, context.workspace.codexModel, context.data);
+      : await handleFastChatPath(message, chat, mode, context.workspace.codexModel, context.data);
     if (commandResponse) return json(commandResponse, 201);
 
     const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
@@ -41,6 +43,7 @@ export async function POST(request: NextRequest) {
       const userMessage: Message | null = isSlashCommand ? null : {
         id: randomUUID(),
         workspaceId: context.workspace.id,
+        mode,
         chatId: chat.id,
         role: "user",
         content: message,
@@ -94,6 +97,7 @@ export async function POST(request: NextRequest) {
     const userMessage: Message = {
       id: randomUUID(),
       workspaceId: context.workspace.id,
+      mode,
       chatId: chat.id,
       role: "user",
       content: message,
@@ -102,6 +106,7 @@ export async function POST(request: NextRequest) {
     const assistantMessage: Message = {
       id: randomUUID(),
       workspaceId: context.workspace.id,
+      mode,
       chatId: chat.id,
       role: "assistant",
       content: assistant.response,
@@ -143,11 +148,12 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function ensureChat(workspaceId: string, chatId: string, message: string): Promise<Chat> {
+async function ensureChat(workspaceId: string, chatId: string, message: string, mode: WorkspaceMode): Promise<Chat> {
   const createdAt = new Date().toISOString();
   return updateData((data) => {
     const existing = data.chats.find((item) => item.id === chatId && item.workspaceId === workspaceId);
     if (existing) {
+      if (chatMode(existing) !== mode) throw new Error("Chat belongs to another workspace mode.");
       existing.updatedAt = createdAt;
       const existingMessages = data.messages.some((item) => item.chatId === existing.id && item.workspaceId === workspaceId);
       if (!existingMessages && isUntitledChat(existing.title)) {
@@ -159,6 +165,7 @@ async function ensureChat(workspaceId: string, chatId: string, message: string):
     const chat: Chat = {
       id: randomUUID(),
       workspaceId,
+      mode,
       title: chatTitle(message),
       createdAt,
       updatedAt: createdAt
@@ -168,7 +175,7 @@ async function ensureChat(workspaceId: string, chatId: string, message: string):
   });
 }
 
-async function handleFastChatPath(message: string, chat: Chat, currentModel: string | undefined, data: AppData) {
+async function handleFastChatPath(message: string, chat: Chat, mode: WorkspaceMode, currentModel: string | undefined, data: AppData) {
   if (message.startsWith("/model")) {
     const nextModelRaw = message.replace(/^\/model\s*/i, "");
     const nextModel = sanitizeCodexModel(nextModelRaw);
@@ -176,6 +183,7 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
     const userMessage: Message = {
       id: randomUUID(),
       workspaceId: chat.workspaceId,
+      mode,
       chatId: chat.id,
       role: "user",
       content: message,
@@ -184,6 +192,7 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
     const assistantMessage: Message = {
       id: randomUUID(),
       workspaceId: chat.workspaceId,
+      mode,
       chatId: chat.id,
       role: "assistant",
       content: modelResponse(nextModelRaw, nextModel, currentModel),
@@ -203,7 +212,7 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
     return { messages: [userMessage, assistantMessage], chat };
   }
 
-  const rootRequest = parseRootSwitch(message);
+  const rootRequest = mode === "infra" ? parseRootSwitch(message) : "";
   if (rootRequest) {
     const roots = await listTerraformRoots(chat.workspaceId, data);
     const root = roots.find((item) => item.name.toLowerCase() === rootRequest || item.path.toLowerCase().includes(rootRequest));
@@ -211,6 +220,7 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
     const userMessage: Message = {
       id: randomUUID(),
       workspaceId: chat.workspaceId,
+      mode,
       chatId: chat.id,
       role: "user",
       content: message,
@@ -219,6 +229,7 @@ async function handleFastChatPath(message: string, chat: Chat, currentModel: str
     const assistantMessage: Message = {
       id: randomUUID(),
       workspaceId: chat.workspaceId,
+      mode,
       chatId: chat.id,
       role: "assistant",
       content: root

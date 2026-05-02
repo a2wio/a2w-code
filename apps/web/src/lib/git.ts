@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { readData, workspaceRepoRoot } from "./data";
 import { decryptSecret } from "./secrets";
-import type { GitAuthMethod, GitCommit, GitConnection, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, WorkspaceDiffFile } from "./types";
+import type { GitAuthMethod, GitCommit, GitConnection, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, WorkspaceDiffFile, WorkspaceMode } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,12 +26,14 @@ export type SetupWorkspaceRepositoryInput = {
   username?: string;
   token?: string;
   sshPrivateKey?: string;
+  nextjsAppName?: string;
+  nextjsHeroText?: string;
 };
 
 const DSTACK_REPOSITORY_URL = "https://github.com/kubeden/dstack.git";
 
-export async function getGitStatus(workspaceId: string): Promise<GitWorkspaceStatus> {
-  const repoRoot = workspaceRepoRoot(workspaceId);
+export async function getGitStatus(workspaceId: string, mode: WorkspaceMode = "infra"): Promise<GitWorkspaceStatus> {
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
   const localRepositoryName = basename(repoRoot);
   if (!(await gitAvailable())) {
     return { available: false, initialized: false, repositoryName: localRepositoryName, clean: true, files: [], message: "git is not available on PATH." };
@@ -71,13 +73,13 @@ export async function getGitStatus(workspaceId: string): Promise<GitWorkspaceSta
   };
 }
 
-export async function getGitDetails(workspaceId: string) {
-  const status = await getGitStatus(workspaceId);
+export async function getGitDetails(workspaceId: string, mode: WorkspaceMode = "infra") {
+  const status = await getGitStatus(workspaceId, mode);
   if (!status.available || !status.initialized) {
     return { git: status, history: [] as GitCommit[], stashes: [] as GitStashEntry[] };
   }
 
-  const repoRoot = workspaceRepoRoot(workspaceId);
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
   const [history, stashes] = await Promise.all([
     gitHistory(repoRoot, 40).catch(() => []),
     gitStashes(repoRoot).catch(() => [])
@@ -85,25 +87,30 @@ export async function getGitDetails(workspaceId: string) {
   return { git: status, history, stashes };
 }
 
-export async function initializeGit(workspaceId: string) {
-  const repoRoot = workspaceRepoRoot(workspaceId);
+export async function initializeGit(workspaceId: string, mode: WorkspaceMode = "infra") {
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
   if (!(await gitAvailable())) throw new Error("git is not available on PATH.");
-  if (await isGitRepository(repoRoot)) return getGitStatus(workspaceId);
+  if (await isGitRepository(repoRoot)) return getGitStatus(workspaceId, mode);
   await git(repoRoot, ["init"]);
   await ensureGitIdentity(repoRoot);
-  return getGitStatus(workspaceId);
+  return getGitStatus(workspaceId, mode);
 }
 
-export async function setupWorkspaceRepository(workspaceId: string, input: SetupWorkspaceRepositoryInput) {
-  const repoRoot = workspaceRepoRoot(workspaceId);
+export async function setupWorkspaceRepository(workspaceId: string, input: SetupWorkspaceRepositoryInput, mode: WorkspaceMode = "infra") {
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
   if (!(await gitAvailable())) throw new Error("git is not available on PATH.");
-  if (await isGitRepository(repoRoot)) return getGitStatus(workspaceId);
+  if (await isGitRepository(repoRoot)) return getGitStatus(workspaceId, mode);
 
   await assertRepositoryRootIsEmpty(repoRoot);
   if (input.mode === "dstack") {
     await setupDstackRepository(repoRoot, input);
     await ensureGitIdentity(repoRoot);
-    return getGitStatus(workspaceId);
+    return getGitStatus(workspaceId, mode);
+  }
+  if (input.mode === "nextjs") {
+    await setupNextjsRepository(repoRoot, input);
+    await ensureGitIdentity(repoRoot);
+    return getGitStatus(workspaceId, mode);
   }
 
   const sourceUrl = cleanRepositoryUrl(input.repositoryUrl);
@@ -112,36 +119,36 @@ export async function setupWorkspaceRepository(workspaceId: string, input: Setup
     await gitGlobal(cloneArgs, env, 120_000);
   });
   await ensureGitIdentity(repoRoot);
-  return getGitStatus(workspaceId);
+  return getGitStatus(workspaceId, mode);
 }
 
-export async function stageWorkspace(workspaceId: string, paths: string[] = []) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function stageWorkspace(workspaceId: string, paths: string[] = [], mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const safePaths = paths.map(cleanRelativePath);
   await git(repoRoot, safePaths.length ? ["add", "--", ...safePaths] : ["add", "-A"]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function unstageWorkspace(workspaceId: string, paths: string[] = []) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function unstageWorkspace(workspaceId: string, paths: string[] = [], mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const safePaths = paths.map(cleanRelativePath);
   await git(repoRoot, safePaths.length ? ["restore", "--staged", "--", ...safePaths] : ["restore", "--staged", "."]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function discardWorkspaceFile(workspaceId: string, path: string, confirm: string) {
+export async function discardWorkspaceFile(workspaceId: string, path: string, confirm: string, mode: WorkspaceMode = "infra") {
   if (confirm !== "DISCARD") throw new Error("Type DISCARD to discard a file.");
-  const repoRoot = await requireGitRepository(workspaceId);
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const safePath = cleanRelativePath(path);
   await git(repoRoot, ["restore", "--staged", "--worktree", "--", safePath]).catch(async () => {
     await git(repoRoot, ["clean", "-fd", "--", safePath]);
   });
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function resetWorkspaceChanges(workspaceId: string, confirm: string) {
+export async function resetWorkspaceChanges(workspaceId: string, confirm: string, mode: WorkspaceMode = "infra") {
   if (confirm !== "RESET") throw new Error("Type RESET to discard all workspace changes.");
-  const repoRoot = await requireGitRepository(workspaceId);
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const hasHead = await git(repoRoot, ["rev-parse", "--verify", "HEAD"]).then(() => true).catch(() => false);
   if (hasHead) {
     await git(repoRoot, ["reset", "--hard"]);
@@ -149,31 +156,31 @@ export async function resetWorkspaceChanges(workspaceId: string, confirm: string
     await git(repoRoot, ["rm", "-r", "--cached", "."], 30_000).catch(() => undefined);
   }
   await git(repoRoot, ["clean", "-fd"]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function commitWorkspace(workspaceId: string, message: string, mode: "all" | "staged" = "all") {
+export async function commitWorkspace(workspaceId: string, message: string, commitMode: "all" | "staged" = "all", mode: WorkspaceMode = "infra") {
   const cleanMessage = message.replace(/\s+/g, " ").trim();
   if (!cleanMessage) throw new Error("Commit message is required.");
 
-  const repoRoot = workspaceRepoRoot(workspaceId);
-  if (!(await isGitRepository(repoRoot))) await initializeGit(workspaceId);
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
+  if (!(await isGitRepository(repoRoot))) await initializeGit(workspaceId, mode);
   await ensureGitIdentity(repoRoot);
-  if (mode === "all") await git(repoRoot, ["add", "-A"]);
+  if (commitMode === "all") await git(repoRoot, ["add", "-A"]);
 
   const staged = await hasStagedChanges(repoRoot);
-  if (!staged) throw new Error(mode === "staged" ? "No staged changes to commit." : "No workspace changes to commit.");
+  if (!staged) throw new Error(commitMode === "staged" ? "No staged changes to commit." : "No workspace changes to commit.");
 
   await git(repoRoot, ["commit", "-m", cleanMessage]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function pushWorkspace(workspaceId: string) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function pushWorkspace(workspaceId: string, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
   if (!branch) throw new Error("Cannot push from a detached HEAD. Create or checkout a branch first.");
   const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
-  await withWorkspaceGitAuth(workspaceId, async (env) => {
+  await withWorkspaceGitAuth(workspaceId, mode, async (env) => {
     await gitWithEnv(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], env, 120_000).catch((error: CommandError) => {
       const output = `${error.stdout || ""}${error.stderr || ""}`;
       if (/non-fast-forward|fetch first|rejected/i.test(output)) {
@@ -182,18 +189,18 @@ export async function pushWorkspace(workspaceId: string) {
       throw error;
     });
   });
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function syncWorkspaceBranch(workspaceId: string) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function syncWorkspaceBranch(workspaceId: string, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
   if (!branch) throw new Error("Cannot sync a detached HEAD. Create or checkout a branch first.");
   const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
   if (!remoteOrigin) throw new Error("No Git remote is configured for this workspace.");
   const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
 
-  await withWorkspaceGitAuth(workspaceId, async (env) => {
+  await withWorkspaceGitAuth(workspaceId, mode, async (env) => {
     if (!upstream) {
       await gitWithEnv(repoRoot, ["fetch", "origin", branch], env, 120_000);
       await git(repoRoot, ["branch", "--set-upstream-to", `origin/${branch}`, branch]);
@@ -207,18 +214,18 @@ export async function syncWorkspaceBranch(workspaceId: string) {
     });
   });
 
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function createBranchFromHead(workspaceId: string, branchName: string) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function createBranchFromHead(workspaceId: string, branchName: string, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const branch = cleanGitBranchName(branchName);
   await git(repoRoot, ["checkout", "-b", branch]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function mergeCurrentBranch(workspaceId: string, input: { targetBranch: string; push?: boolean }) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function mergeCurrentBranch(workspaceId: string, input: { targetBranch: string; push?: boolean }, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const sourceBranch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
   if (!sourceBranch) throw new Error("Cannot merge from a detached HEAD. Create or checkout a branch first.");
   if (!(await isWorkingTreeClean(repoRoot))) throw new Error("Commit or stash workspace changes before merging.");
@@ -228,7 +235,7 @@ export async function mergeCurrentBranch(workspaceId: string, input: { targetBra
 
   const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
   if (remoteOrigin) {
-    await withWorkspaceGitAuth(workspaceId, async (env) => {
+    await withWorkspaceGitAuth(workspaceId, mode, async (env) => {
       await gitWithEnv(repoRoot, ["fetch", "origin", targetBranch], env, 120_000).catch(() => undefined);
     });
   }
@@ -240,38 +247,38 @@ export async function mergeCurrentBranch(workspaceId: string, input: { targetBra
   await git(repoRoot, ["merge", "--no-ff", sourceBranch, "-m", `Merge branch '${sourceBranch}' into ${targetBranch}`], 120_000);
 
   if (input.push) {
-    await withWorkspaceGitAuth(workspaceId, async (env) => {
+    await withWorkspaceGitAuth(workspaceId, mode, async (env) => {
       await gitWithEnv(repoRoot, ["push", "-u", "origin", targetBranch], env, 120_000);
     });
   }
 
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function stashWorkspace(workspaceId: string, input: { includeUntracked?: boolean; message?: string } = {}) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function stashWorkspace(workspaceId: string, input: { includeUntracked?: boolean; message?: string } = {}, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   if (await isWorkingTreeClean(repoRoot)) throw new Error("There are no changes to stash.");
   const message = input.message?.replace(/\s+/g, " ").trim() || "A2W workspace stash";
   await git(repoRoot, ["stash", "push", ...(input.includeUntracked ? ["--include-untracked"] : []), "-m", message]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function applyStash(workspaceId: string, index: number, mode: "apply" | "pop" = "apply") {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function applyStash(workspaceId: string, index: number, stashMode: "apply" | "pop" = "apply", mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const ref = stashRef(index);
-  await git(repoRoot, ["stash", mode, ref]);
-  return getGitDetails(workspaceId);
+  await git(repoRoot, ["stash", stashMode, ref]);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function dropStash(workspaceId: string, index: number, confirm: string) {
+export async function dropStash(workspaceId: string, index: number, confirm: string, mode: WorkspaceMode = "infra") {
   if (confirm !== "DROP") throw new Error("Type DROP to delete a stash.");
-  const repoRoot = await requireGitRepository(workspaceId);
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   await git(repoRoot, ["stash", "drop", stashRef(index)]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function checkoutGitRef(workspaceId: string, input: { ref: string; stashBefore?: boolean; createBranch?: string }) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function checkoutGitRef(workspaceId: string, input: { ref: string; stashBefore?: boolean; createBranch?: string }, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   const ref = cleanGitRef(input.ref);
   await ensureCleanOrStash(repoRoot, input.stashBefore);
   const branch = input.createBranch?.trim();
@@ -280,26 +287,26 @@ export async function checkoutGitRef(workspaceId: string, input: { ref: string; 
   } else {
     await git(repoRoot, ["checkout", ref]);
   }
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function revertCommit(workspaceId: string, input: { ref: string; stashBefore?: boolean }) {
-  const repoRoot = await requireGitRepository(workspaceId);
+export async function revertCommit(workspaceId: string, input: { ref: string; stashBefore?: boolean }, mode: WorkspaceMode = "infra") {
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   await ensureCleanOrStash(repoRoot, input.stashBefore);
   await git(repoRoot, ["revert", "--no-edit", cleanGitRef(input.ref)]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-export async function resetToCommit(workspaceId: string, input: { ref: string; confirm: string; stashBefore?: boolean }) {
+export async function resetToCommit(workspaceId: string, input: { ref: string; confirm: string; stashBefore?: boolean }, mode: WorkspaceMode = "infra") {
   if (input.confirm !== "RESET") throw new Error("Type RESET to hard reset the repository.");
-  const repoRoot = await requireGitRepository(workspaceId);
+  const repoRoot = await requireGitRepository(workspaceId, mode);
   await ensureCleanOrStash(repoRoot, input.stashBefore);
   await git(repoRoot, ["reset", "--hard", cleanGitRef(input.ref)]);
-  return getGitDetails(workspaceId);
+  return getGitDetails(workspaceId, mode);
 }
 
-async function requireGitRepository(workspaceId: string) {
-  const repoRoot = workspaceRepoRoot(workspaceId);
+async function requireGitRepository(workspaceId: string, mode: WorkspaceMode = "infra") {
+  const repoRoot = workspaceRepoRoot(workspaceId, mode);
   if (!(await gitAvailable())) throw new Error("git is not available on PATH.");
   if (!(await isGitRepository(repoRoot))) throw new Error("Workspace Git repository is not initialized yet.");
   return repoRoot;
@@ -373,6 +380,163 @@ async function setupDstackRepository(repoRoot: string, input: SetupWorkspaceRepo
   await withGitAuth(input, async (env) => {
     await gitWithEnv(repoRoot, ["push", "-u", "origin", branch], env, 120_000);
   });
+}
+
+async function setupNextjsRepository(repoRoot: string, input: SetupWorkspaceRepositoryInput) {
+  const remoteUrl = await templateTargetRepositoryUrl(input, "a2w-web-app");
+  const branch = input.branch?.trim() || "main";
+
+  await mkdir(repoRoot, { recursive: true });
+  await writeNextjsTemplate(repoRoot, {
+    appName: input.nextjsAppName || input.repositoryName || "a2w-web-app",
+    heroText: input.nextjsHeroText
+  });
+  await git(repoRoot, ["init"]);
+  await ensureGitIdentity(repoRoot);
+  await git(repoRoot, ["checkout", "-B", branch]);
+  await git(repoRoot, ["add", "-A"]);
+  await git(repoRoot, ["commit", "-m", "Initialize A2W Next.js app"]);
+  await git(repoRoot, ["remote", "add", "origin", remoteUrl]);
+  await withGitAuth(input, async (env) => {
+    await gitWithEnv(repoRoot, ["push", "-u", "origin", branch], env, 120_000);
+  });
+}
+
+async function templateTargetRepositoryUrl(input: SetupWorkspaceRepositoryInput, fallbackName: string) {
+  const explicitUrl = String(input.repositoryUrl || "").trim();
+  if (explicitUrl) return explicitUrl;
+
+  if (input.gitProvider === "github" && input.authMethod === "token") {
+    if (!input.token?.trim()) throw new Error("Creating a GitHub repository requires an HTTPS Git token.");
+    return createGithubRepository(input.token.trim(), input.repositoryName || fallbackName, input.repositoryOwner);
+  }
+
+  throw new Error("A remote repository URL is required unless GitHub token-based repository creation is used.");
+}
+
+async function writeNextjsTemplate(repoRoot: string, input: { appName?: string; heroText?: string }) {
+  const appName = cleanNpmPackageName(input.appName || "a2w-web-app");
+  const displayName = titleFromPackageName(appName);
+  const heroText = String(input.heroText || "").trim() || "Build from here.";
+  const files = new Map<string, string>([
+    [".gitignore", [
+      "node_modules",
+      ".next",
+      "out",
+      "dist",
+      ".env",
+      ".env.local",
+      ".DS_Store",
+      "npm-debug.log*"
+    ].join("\n") + "\n"],
+    ["package.json", JSON.stringify({
+      name: appName,
+      private: true,
+      scripts: {
+        dev: "next dev",
+        build: "next build",
+        start: "next start",
+        lint: "tsc --noEmit",
+        test: "node --test"
+      },
+      dependencies: {
+        "@tailwindcss/postcss": "^4.1.0",
+        "next": "^16.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "tailwindcss": "^4.1.0"
+      },
+      devDependencies: {
+        "@types/node": "^22.0.0",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "typescript": "^5.0.0"
+      }
+    }, null, 2) + "\n"],
+    ["next.config.mjs", "/** @type {import('next').NextConfig} */\nconst nextConfig = {};\n\nexport default nextConfig;\n"],
+    ["tsconfig.json", JSON.stringify({
+      compilerOptions: {
+        target: "ES2017",
+        lib: ["dom", "dom.iterable", "esnext"],
+        allowJs: true,
+        skipLibCheck: true,
+        strict: true,
+        noEmit: true,
+        esModuleInterop: true,
+        module: "esnext",
+        moduleResolution: "bundler",
+        resolveJsonModule: true,
+        isolatedModules: true,
+        jsx: "react-jsx",
+        incremental: true,
+        plugins: [{ name: "next" }]
+      },
+      include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+      exclude: ["node_modules"]
+    }, null, 2) + "\n"],
+    ["postcss.config.mjs", "const config = { plugins: { \"@tailwindcss/postcss\": {} } };\n\nexport default config;\n"],
+    ["next-env.d.ts", "/// <reference types=\"next\" />\n/// <reference types=\"next/image-types/global\" />\n\n// This file is generated for Next.js type support.\n"],
+    ["src/app/globals.css", "@import \"tailwindcss\";\n\n:root {\n  color-scheme: light;\n}\n\nbody {\n  margin: 0;\n  background: #f8fafc;\n  color: #0f172a;\n  font-family: Arial, Helvetica, sans-serif;\n}\n"],
+    ["src/app/layout.tsx", `import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: ${JSON.stringify(displayName)},
+  description: "Generated by A2W-Code."
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`],
+    ["src/app/page.tsx", `export default function Home() {
+  return (
+    <main className="grid min-h-screen place-items-center px-6">
+      <section className="max-w-2xl text-center">
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-600">A2W-Code</p>
+        <h1 className="mt-4 text-5xl font-semibold tracking-tight text-slate-950">${escapeJsxText(heroText)}</h1>
+        <p className="mt-5 text-lg leading-8 text-slate-600">
+          This Next.js workspace is ready for Codex-driven edits, NPM checks, and Git review.
+        </p>
+      </section>
+    </main>
+  );
+}
+`],
+    ["README.md", `# ${appName}\n\nA Next.js workspace initialized by A2W-Code.\n\n## Commands\n\n- \`npm install\`\n- \`npm run lint\`\n- \`npm test\`\n- \`npm run build\`\n`]
+  ]);
+
+  for (const [path, content] of files) {
+    const target = join(repoRoot, path);
+    await mkdir(join(target, ".."), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
+}
+
+function cleanNpmPackageName(value: string) {
+  const clean = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 214);
+  return clean || "a2w-web-app";
+}
+
+function titleFromPackageName(value: string) {
+  return value
+    .split(/[/-]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "A2W Web App";
+}
+
+function escapeJsxText(value: string) {
+  return value.replace(/[<>{}]/g, "");
 }
 
 async function dstackTargetRepositoryUrl(input: SetupWorkspaceRepositoryInput) {
@@ -501,11 +665,17 @@ async function withGitAuth<T>(input: SetupWorkspaceRepositoryInput, callback: (e
   return callback({ GIT_TERMINAL_PROMPT: "0" });
 }
 
-async function withWorkspaceGitAuth<T>(workspaceId: string, callback: (env: Record<string, string>) => Promise<T>) {
+async function withWorkspaceGitAuth<T>(workspaceId: string, mode: WorkspaceMode, callback: (env: Record<string, string>) => Promise<T>) {
   const data = await readData();
+  const legacyInfraConnection = data.gitConnections
+    .filter((item) => item.workspaceId === workspaceId)
+    .filter((item) => !item.mode)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const connection = data.gitConnections
     .filter((item) => item.workspaceId === workspaceId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    .filter((item) => (item.mode || "infra") === mode)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+    || (mode === "infra" ? legacyInfraConnection : undefined);
   if (!connection) return callback({ GIT_TERMINAL_PROMPT: "0", ...defaultSshEnv() });
   return withGitConnectionAuth(connection, callback);
 }
@@ -612,8 +782,8 @@ function parseStatus(output: string) {
 async function ensureGitIdentity(repoRoot: string) {
   const name = await git(repoRoot, ["config", "--get", "user.name"]).catch(() => "");
   const email = await git(repoRoot, ["config", "--get", "user.email"]).catch(() => "");
-  if (!name.trim()) await git(repoRoot, ["config", "user.name", "A2W-Codex-Terraform-v0.0.1"]);
-  if (!email.trim()) await git(repoRoot, ["config", "user.email", "terraform-garden@localhost"]);
+  if (!name.trim()) await git(repoRoot, ["config", "user.name", "A2W-Code"]);
+  if (!email.trim()) await git(repoRoot, ["config", "user.email", "a2w-code@localhost"]);
 }
 
 async function isGitRepository(repoRoot: string) {

@@ -16,8 +16,8 @@ export default async function AuthPage() {
             <div className="flex items-center gap-3">
               <AppLogo decorative className="h-10 w-10" />
               <span>
-                <span className="block text-sm font-semibold">A2W-Codex-Terraform-v0.0.1</span>
-                <span className="block text-xs text-white/60">Self-hosted infra workbench</span>
+                <span className="block text-sm font-semibold">A2W-Code</span>
+                <span className="block text-xs text-white/60">Self-hosted Codex workbench</span>
               </span>
             </div>
             <div className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white/75">
@@ -26,12 +26,12 @@ export default async function AuthPage() {
           </div>
 
           <div className="max-w-xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">Codex-driven Terraform</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">Codex-driven code</p>
             <h1 className="mt-4 text-5xl font-semibold leading-[1.02] tracking-[-0.04em]">
-              Sign in to your local infrastructure editor.
+              Sign in to your local coding workspace.
             </h1>
             <p className="mt-5 max-w-lg text-sm leading-7 text-white/68">
-              One admin account protects the local UI. Codex handles code changes, Terraform handles plans, and every action stays visible before apply.
+              One admin account protects the local UI. Codex handles code changes, action profiles run checks, and every change stays visible before commit.
             </p>
           </div>
         </div>
@@ -55,6 +55,10 @@ function AuthLogoStrip() {
       <AppLogo decorative className="h-16 w-16" roundedClassName="rounded-[1.15rem]" />
       <PlusMark />
       <LogoMark>
+        <NextjsLogo />
+      </LogoMark>
+      <PlusMark />
+      <LogoMark>
         <TerraformLogo />
       </LogoMark>
     </div>
@@ -75,6 +79,16 @@ function PlusMark() {
 
 function CodexLogo() {
   return <img alt="" aria-hidden="true" className="h-10 w-10 object-contain" src="/codex-logo.png" />;
+}
+
+function NextjsLogo() {
+  return (
+    <svg aria-hidden="true" className="h-10 w-10" viewBox="0 0 48 48" fill="none">
+      <circle cx="24" cy="24" r="21" fill="#050505" />
+      <path d="M14.9 33V15h3.6l12.9 18h-3.7L18.2 19.7V33h-3.3Z" fill="white" />
+      <path d="M31 15h3.2v18H31V15Z" fill="white" />
+    </svg>
+  );
 }
 
 function TerraformLogo() {

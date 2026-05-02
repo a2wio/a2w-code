@@ -1,4 +1,5 @@
 export type CloudProvider = "aws" | "azure" | "gcp";
+export type WorkspaceMode = "infra" | "web";
 
 export type User = {
   id: string;
@@ -13,6 +14,7 @@ export type Workspace = {
   id: string;
   userId: string;
   companyName: string;
+  mode?: WorkspaceMode;
   cloudPreference: CloudProvider;
   createdAt: string;
   onboardingCompletedAt?: string;
@@ -46,13 +48,14 @@ export type ProviderConnection = {
   createdAt: string;
 };
 
-export type GitRepositoryMode = "dstack" | "existing";
+export type GitRepositoryMode = "dstack" | "existing" | "nextjs";
 export type GitAuthMethod = "none" | "ssh" | "token";
 export type GitProvider = "github" | "gitlab" | "bitbucket" | "azure-devops" | "generic";
 
 export type GitConnection = {
   id: string;
   workspaceId: string;
+  mode?: WorkspaceMode;
   gitProvider?: GitProvider;
   repositoryMode: GitRepositoryMode;
   repositoryUrl: string;
@@ -67,6 +70,7 @@ export type GitConnection = {
 export type Chat = {
   id: string;
   workspaceId: string;
+  mode?: WorkspaceMode;
   title: string;
   codexThreadId?: string;
   focusSummary?: string;
@@ -78,6 +82,7 @@ export type Chat = {
 export type Message = {
   id: string;
   workspaceId: string;
+  mode?: WorkspaceMode;
   chatId?: string;
   role: "user" | "assistant";
   content: string;
@@ -164,7 +169,7 @@ export type SandboxRun = {
   workspaceId: string;
   planId?: string;
   rootPath?: string;
-  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+  mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy" | "npm-install" | "npm-audit" | "npm-lint" | "npm-test" | "npm-build";
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   command: string[];
   exitCode: number | null;

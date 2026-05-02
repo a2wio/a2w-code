@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { updateData } from "./data";
 import { setupWorkspaceRepository } from "./git";
 import { encryptSecret } from "./secrets";
-import type { GitAuthMethod, GitConnection, GitProvider, GitRepositoryMode } from "./types";
+import { normalizeWorkspaceMode } from "./workspace-mode";
+import type { GitAuthMethod, GitConnection, GitProvider, GitRepositoryMode, WorkspaceMode } from "./types";
 
 export type OnboardingGitInput = {
+  mode: WorkspaceMode;
   gitProvider: GitProvider;
   repositoryMode: GitRepositoryMode;
   repositoryUrl: string;
@@ -15,10 +17,13 @@ export type OnboardingGitInput = {
   gitUsername: string;
   gitToken: string;
   gitSshPrivateKey: string;
+  nextjsAppName: string;
+  nextjsHeroText: string;
 };
 
 export function parseOnboardingGitInput(body: Record<string, unknown>): OnboardingGitInput {
   return {
+    mode: normalizeWorkspaceMode(body.mode),
     gitProvider: cleanGitProvider(body.gitProvider),
     repositoryMode: cleanRepositoryMode(body.repositoryMode),
     repositoryUrl: String(body.repositoryUrl || "").trim(),
@@ -28,7 +33,9 @@ export function parseOnboardingGitInput(body: Record<string, unknown>): Onboardi
     gitAuthMethod: cleanGitAuthMethod(body.gitAuthMethod),
     gitUsername: String(body.gitUsername || "").trim(),
     gitToken: String(body.gitToken || ""),
-    gitSshPrivateKey: String(body.gitSshPrivateKey || "")
+    gitSshPrivateKey: String(body.gitSshPrivateKey || ""),
+    nextjsAppName: String(body.nextjsAppName || "").trim(),
+    nextjsHeroText: String(body.nextjsHeroText || "").trim()
   };
 }
 
@@ -43,13 +50,16 @@ export async function configureOnboardingGit(workspaceId: string, input: Onboard
     authMethod: input.gitAuthMethod,
     username: input.gitUsername,
     token: input.gitToken,
-    sshPrivateKey: input.gitSshPrivateKey
-  });
+    sshPrivateKey: input.gitSshPrivateKey,
+    nextjsAppName: input.nextjsAppName,
+    nextjsHeroText: input.nextjsHeroText
+  }, input.mode);
   const configuredRepositoryUrl = gitStatus.remoteUrl || input.repositoryUrl;
   const createdAt = new Date().toISOString();
   const gitConnection: GitConnection = {
     id: randomUUID(),
     workspaceId,
+    mode: input.mode,
     gitProvider: input.gitProvider,
     repositoryMode: input.repositoryMode,
     repositoryUrl: configuredRepositoryUrl,
@@ -63,7 +73,9 @@ export async function configureOnboardingGit(workspaceId: string, input: Onboard
       ...(input.repositoryBranch ? { branch: input.repositoryBranch } : {}),
       ...(input.gitUsername ? { username: input.gitUsername } : {}),
       ...(input.gitAuthMethod === "token" && input.gitToken ? { tokenConfigured: "true" } : {}),
-      ...(input.gitAuthMethod === "ssh" && input.gitSshPrivateKey ? { sshKeyConfigured: "true" } : {})
+      ...(input.gitAuthMethod === "ssh" && input.gitSshPrivateKey ? { sshKeyConfigured: "true" } : {}),
+      ...(input.repositoryMode === "nextjs" && input.nextjsAppName ? { nextjsAppName: input.nextjsAppName } : {}),
+      ...(input.repositoryMode === "nextjs" && input.nextjsHeroText ? { nextjsHeroText: input.nextjsHeroText } : {})
     },
     secrets: {
       ...(input.gitAuthMethod === "token" && input.gitToken ? { token: encryptSecret(input.gitToken) } : {}),
@@ -81,13 +93,17 @@ export async function configureOnboardingGit(workspaceId: string, input: Onboard
     workspace.repositoryUrl = configuredRepositoryUrl;
     workspace.repositoryBranch = input.repositoryBranch || gitStatus.branch || undefined;
 
-    data.gitConnections = data.gitConnections.filter((item) => item.workspaceId !== workspaceId);
+    data.gitConnections = data.gitConnections.filter((item) => !(item.workspaceId === workspaceId && (item.mode || "infra") === input.mode));
     data.gitConnections.push(gitConnection);
     data.events.push({
       id: randomUUID(),
       workspaceId,
       type: "git.repository_configured",
-      label: input.repositoryMode === "dstack" ? "DStack repository configured" : "Existing Git repository configured",
+      label: input.repositoryMode === "dstack"
+        ? "DStack repository configured"
+        : input.repositoryMode === "nextjs"
+          ? "Next.js repository configured"
+          : "Existing Git repository configured",
       createdAt
     });
   });
@@ -96,6 +112,7 @@ export async function configureOnboardingGit(workspaceId: string, input: Onboard
 }
 
 export function cleanRepositoryMode(value: unknown): GitRepositoryMode {
+  if (value === "nextjs") return "nextjs";
   return value === "existing" ? "existing" : "dstack";
 }
 

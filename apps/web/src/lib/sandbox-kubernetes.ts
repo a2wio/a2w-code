@@ -3,6 +3,7 @@ import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { PROJECT_ROOT } from "./data";
+import type { WorkspaceMode } from "./types";
 
 type KubernetesConfig = {
   host: string;
@@ -53,6 +54,7 @@ export type KubernetesSandboxResult = {
 export type KubernetesSandboxInput = {
   runId: string;
   workspaceId: string;
+  workspaceMode?: WorkspaceMode;
   mode: string;
   image: string;
   script: string;
@@ -66,6 +68,11 @@ const SCRIPT_FILES = [
   "terraform-plan.sh",
   "terraform-apply.sh",
   "terraform-destroy.sh",
+  "npm-install.sh",
+  "npm-audit.sh",
+  "npm-lint.sh",
+  "npm-test.sh",
+  "npm-build.sh",
   "validate.sh"
 ];
 
@@ -221,6 +228,9 @@ function sandboxJob(input: KubernetesSandboxInput & {
 }) {
   const dataPvc = process.env.A2W_K8S_DATA_PVC || "a2w-codex-terraform-data";
   const sandboxServiceAccount = process.env.A2W_K8S_SANDBOX_SERVICE_ACCOUNT || "default";
+  const workspaceSubPath = input.workspaceMode === "web"
+    ? `workspaces/${input.workspaceId}/repositories/web`
+    : `workspaces/${input.workspaceId}/repository`;
 
   return {
     apiVersion: "batch/v1",
@@ -261,7 +271,7 @@ function sandboxJob(input: KubernetesSandboxInput & {
                 {
                   name: "workspace",
                   mountPath: "/workspace",
-                  subPath: `workspaces/${input.workspaceId}/repository`
+                  subPath: workspaceSubPath
                 },
                 {
                   name: "scripts",

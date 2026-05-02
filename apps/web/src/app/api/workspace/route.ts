@@ -5,6 +5,7 @@ import { publicProviderConnection } from "@/lib/provider";
 import { sanitizeCodexModel } from "@/lib/codex-models";
 import { getGitStatus } from "@/lib/git";
 import { listTerraformRoots, validateTerraformRootPath } from "@/lib/terraform-roots";
+import { chatMode, normalizeWorkspaceMode, workspaceMode } from "@/lib/workspace-mode";
 
 export const runtime = "nodejs";
 
@@ -14,20 +15,23 @@ export async function GET() {
 
   const { workspace, data, user } = context;
   const workspaceId = workspace.id;
-  const terraformRoots = await listTerraformRoots(workspaceId, data);
+  const activeMode = workspaceMode(workspace);
+  const chats = data.chats.filter((item) => item.workspaceId === workspaceId && chatMode(item) === activeMode);
+  const chatIds = new Set(chats.map((chat) => chat.id));
+  const terraformRoots = activeMode === "infra" ? await listTerraformRoots(workspaceId, data) : [];
   return json({
     user,
-    workspace,
-    chats: data.chats.filter((item) => item.workspaceId === workspaceId),
+    workspace: { ...workspace, mode: activeMode },
+    chats,
     providerConnections: data.providerConnections
       .filter((item) => item.workspaceId === workspaceId)
       .map(publicProviderConnection),
-    messages: data.messages.filter((item) => item.workspaceId === workspaceId),
-    plans: data.plans.filter((item) => item.workspaceId === workspaceId),
+    messages: data.messages.filter((item) => item.workspaceId === workspaceId && (!item.chatId || chatIds.has(item.chatId))),
+    plans: activeMode === "infra" ? data.plans.filter((item) => item.workspaceId === workspaceId) : [],
     events: data.events.filter((item) => item.workspaceId === workspaceId),
-    sandboxRuns: data.sandboxRuns.filter((item) => item.workspaceId === workspaceId),
+    sandboxRuns: data.sandboxRuns.filter((item) => item.workspaceId === workspaceId && (activeMode === "web" ? item.mode.startsWith("npm-") : !item.mode.startsWith("npm-"))),
     terraformRoots,
-    gitStatus: await getGitStatus(workspaceId)
+    gitStatus: await getGitStatus(workspaceId, activeMode)
   });
 }
 
@@ -46,6 +50,9 @@ export async function PATCH(request: Request) {
       if ("codexModel" in body) {
         const model = sanitizeCodexModel(body.codexModel);
         item.codexModel = model || undefined;
+      }
+      if ("mode" in body) {
+        item.mode = normalizeWorkspaceMode(body.mode);
       }
       if ("selectedTerraformRoot" in body) {
         item.selectedTerraformRoot = body.selectedTerraformRoot ? validateTerraformRootPath(String(body.selectedTerraformRoot)) : undefined;
