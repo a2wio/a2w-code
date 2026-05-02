@@ -1357,7 +1357,7 @@ export function AgentChat({
               aria-label="Focus mode"
             >
               <Icon name="fa-circle-nodes" />
-              <span>Focus</span>
+              <span>Focus mode</span>
             </button>
           ) : null}
 
