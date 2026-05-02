@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Icon } from "./Icon";
 
-export type CodexFocusStatus = "idle" | "thinking" | "tool_running" | "files_changed" | "blocked" | "error" | "complete";
+export type CodexFocusStatus = "idle" | "thinking" | "tool_running" | "files_changed" | "blocked" | "error" | "cancelled" | "complete";
 
 export type CodexFocusAction = {
   kind: "search" | "command" | "file" | "thinking" | "generic";
@@ -15,13 +15,15 @@ export type CodexFocusAction = {
 type CodexFocusSphereProps = {
   status: CodexFocusStatus;
   statusLabel: string;
-  detail: string;
+  detail?: string;
   rootName: string;
   changedFiles: number;
   additions: number;
   deletions: number;
   actions: CodexFocusAction[];
-  onShowTranscript: () => void;
+  responseSummary?: string;
+  presentation?: "focus" | "new-chat";
+  onShowTranscript?: () => void;
 };
 
 const PARTICLE_COUNT = 720;
@@ -39,11 +41,14 @@ export function CodexFocusSphere({
   additions,
   deletions,
   actions,
+  responseSummary,
+  presentation = "focus",
   onShowTranscript
 }: CodexFocusSphereProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
   const changedFilesRef = useRef(changedFiles);
+  const minimal = presentation === "new-chat";
 
   useEffect(() => {
     statusRef.current = status;
@@ -267,37 +272,46 @@ export function CodexFocusSphere({
       <FocusGlow status={status} />
       <div
         ref={mountRef}
-        className="pointer-events-none absolute left-1/2 top-[43%] -translate-x-1/2 -translate-y-1/2"
+        className={`pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 ${minimal ? "top-[42%]" : "top-[43%]"}`}
         style={{
-          width: "min(76vw, 56vh, 720px)",
-          height: "min(76vw, 56vh, 720px)"
+          width: minimal ? "min(72vw, 52vh, 650px)" : "min(76vw, 56vh, 720px)",
+          height: minimal ? "min(72vw, 52vh, 650px)" : "min(76vw, 56vh, 720px)"
         }}
       />
 
       <ActionNotificationReel actions={actions} />
 
-      <div className="absolute inset-x-4 bottom-4 z-10 mx-auto grid max-w-3xl gap-2 sm:inset-x-8 sm:bottom-5">
+      <div className={`absolute inset-x-4 z-10 mx-auto grid max-w-3xl gap-2 sm:inset-x-8 ${minimal ? "top-[63%]" : "bottom-4 sm:bottom-5"}`}>
         <div className="mx-auto mb-1 flex max-w-xl flex-col items-center text-center">
-          <div className={`mb-3 h-2 w-2 rounded-full shadow-[0_0_22px_currentColor] transition-colors duration-700 ease-out ${statusDotClass(status)}`} />
-          <h2 className="text-xl font-semibold tracking-[-0.035em] text-gray-950 sm:text-2xl">{statusLabel}</h2>
-          <p className="mt-2 max-w-md text-xs leading-6 text-gray-500 sm:text-sm">{detail}</p>
+          {minimal ? null : <div className={`mb-3 h-2 w-2 rounded-full shadow-[0_0_22px_currentColor] transition-colors duration-700 ease-out ${statusDotClass(status)}`} />}
+          <h2 className={`${minimal ? "text-2xl font-normal italic sm:text-3xl" : "text-xl font-semibold sm:text-2xl"} tracking-[-0.035em] text-gray-950`}>{statusLabel}</h2>
+          {detail ? <p className="mt-2 max-w-md text-xs leading-6 text-gray-500 sm:text-sm">{detail}</p> : null}
+          {responseSummary ? (
+            <p className="mt-3 max-w-xl text-balance text-sm font-medium leading-7 text-gray-800 sm:text-[15px]">
+              “{responseSummary}”
+            </p>
+          ) : null}
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <FocusMetric icon="fa-code-branch" label={`${changedFiles} changed`} />
-          <FocusMetric icon="fa-plus" label={`+${additions}`} tone="add" />
-          <FocusMetric icon="fa-minus" label={`-${deletions}`} tone="remove" />
-        </div>
+        {minimal ? null : (
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <FocusMetric icon="fa-code-branch" label={`${changedFiles} changed`} />
+            <FocusMetric icon="fa-plus" label={`+${additions}`} tone="add" />
+            <FocusMetric icon="fa-minus" label={`-${deletions}`} tone="remove" />
+          </div>
+        )}
       </div>
 
-      <button
-        type="button"
-        onClick={onShowTranscript}
-        className="absolute left-1/2 top-2 z-30 inline-flex h-9 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-3 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black sm:top-4"
-        aria-label="Inspect mode"
-      >
-        <Icon name="fa-message" />
-        Inspect mode
-      </button>
+      {onShowTranscript ? (
+        <button
+          type="button"
+          onClick={onShowTranscript}
+          className="absolute left-1/2 top-2 z-30 inline-flex h-9 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-3 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black sm:top-4"
+          aria-label="Inspect mode"
+        >
+          <Icon name="fa-message" />
+          Inspect mode
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -328,6 +342,11 @@ function FocusGlow({ status }: { status: CodexFocusStatus }) {
       key: "error",
       active: status === "error",
       className: "bg-[radial-gradient(circle_at_50%_42%,rgba(220,38,38,0.13),rgba(251,251,249,0)_34%),radial-gradient(circle_at_50%_58%,rgba(17,17,17,0.04),rgba(251,251,249,0)_44%)]"
+    },
+    {
+      key: "cancelled",
+      active: status === "cancelled",
+      className: "bg-[radial-gradient(circle_at_50%_42%,rgba(239,68,68,0.22),rgba(251,251,249,0)_34%),radial-gradient(circle_at_50%_58%,rgba(185,28,28,0.12),rgba(251,251,249,0)_44%)]"
     },
     {
       key: "complete",
@@ -758,6 +777,31 @@ function statusProfile(status: CodexFocusStatus) {
       coreOpacity: 0.1
     };
   }
+  if (status === "cancelled") {
+    return {
+      color: "#EF4444",
+      particleOpacity: 0.46,
+      particleSize: 0.019,
+      curveOpacity: 0.78,
+      surfaceOpacity: 0.05,
+      magnetOpacity: 0.48,
+      breath: 0.04,
+      breathSpeed: 2.4,
+      pulse: 0.44,
+      wave: 0.13,
+      waveSpeed: 4.4,
+      orbit: 0.08,
+      orbitSpeed: 2,
+      twistSpeed: 0.16,
+      rotation: 0.12,
+      innerMotion: 0.04,
+      curveWave: 0.18,
+      curveFuzz: 0.04,
+      magnetPull: 0.14,
+      surfaceRipple: 0.05,
+      coreOpacity: 0.12
+    };
+  }
   if (status === "complete") {
     return {
       color: "#059669",
@@ -810,7 +854,7 @@ function statusProfile(status: CodexFocusStatus) {
 
 function statusDotClass(status: CodexFocusStatus) {
   if (status === "blocked") return "bg-amber-500 text-amber-500";
-  if (status === "error") return "bg-red-500 text-red-500";
+  if (status === "error" || status === "cancelled") return "bg-red-500 text-red-500";
   if (status === "complete") return "bg-emerald-500 text-emerald-500";
   if (status === "tool_running" || status === "thinking") return "bg-[#0EA5E9] text-[#0EA5E9]";
   if (status === "files_changed") return "bg-[#F05032] text-[#F05032]";
@@ -827,7 +871,7 @@ function focusGlowClass(status: CodexFocusStatus) {
   if (status === "blocked") {
     return "bg-[radial-gradient(circle_at_50%_42%,rgba(217,119,6,0.14),rgba(251,251,249,0)_34%),radial-gradient(circle_at_50%_58%,rgba(17,17,17,0.04),rgba(251,251,249,0)_44%)]";
   }
-  if (status === "error") {
+  if (status === "error" || status === "cancelled") {
     return "bg-[radial-gradient(circle_at_50%_42%,rgba(220,38,38,0.13),rgba(251,251,249,0)_34%),radial-gradient(circle_at_50%_58%,rgba(17,17,17,0.04),rgba(251,251,249,0)_44%)]";
   }
   if (status === "complete") {

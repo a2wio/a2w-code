@@ -174,8 +174,39 @@ export async function pushWorkspace(workspaceId: string) {
   if (!branch) throw new Error("Cannot push from a detached HEAD. Create or checkout a branch first.");
   const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
   await withWorkspaceGitAuth(workspaceId, async (env) => {
-    await gitWithEnv(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], env, 120_000);
+    await gitWithEnv(repoRoot, upstream ? ["push"] : ["push", "-u", "origin", branch], env, 120_000).catch((error: CommandError) => {
+      const output = `${error.stdout || ""}${error.stderr || ""}`;
+      if (/non-fast-forward|fetch first|rejected/i.test(output)) {
+        throw new Error("Remote has commits this workspace does not have. Run Git sync, resolve any conflicts, then push again.");
+      }
+      throw error;
+    });
   });
+  return getGitDetails(workspaceId);
+}
+
+export async function syncWorkspaceBranch(workspaceId: string) {
+  const repoRoot = await requireGitRepository(workspaceId);
+  const branch = await git(repoRoot, ["branch", "--show-current"]).then((value) => value.trim()).catch(() => "");
+  if (!branch) throw new Error("Cannot sync a detached HEAD. Create or checkout a branch first.");
+  const remoteOrigin = await git(repoRoot, ["config", "--get", "remote.origin.url"]).then((value) => value.trim()).catch(() => "");
+  if (!remoteOrigin) throw new Error("No Git remote is configured for this workspace.");
+  const upstream = await git(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).then((value) => value.trim()).catch(() => "");
+
+  await withWorkspaceGitAuth(workspaceId, async (env) => {
+    if (!upstream) {
+      await gitWithEnv(repoRoot, ["fetch", "origin", branch], env, 120_000);
+      await git(repoRoot, ["branch", "--set-upstream-to", `origin/${branch}`, branch]);
+    }
+    await gitWithEnv(repoRoot, ["pull", "--rebase", "--autostash"], env, 120_000).catch((error: CommandError) => {
+      const output = `${error.stdout || ""}${error.stderr || ""}`.trim();
+      if (/conflict|could not apply|resolve all conflicts|fix conflicts/i.test(output)) {
+        throw new Error("Git sync hit rebase conflicts. Resolve the conflicted files, then continue or abort the rebase from Git.");
+      }
+      throw error;
+    });
+  });
+
   return getGitDetails(workspaceId);
 }
 

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
-import { getCurrentContext } from "@/lib/auth";
-import { getCodexTmuxPane, sendCodexTmuxChoice, sendCodexTmuxControl, type CodexTmuxControlKey } from "@/lib/codex-tmux";
+import { getCurrentContext, normalizeProvider } from "@/lib/auth";
+import { ensureCodexTmuxSession, getCodexTmuxPane, sendCodexTmuxChoice, sendCodexTmuxControl, type CodexTmuxControlKey } from "@/lib/codex-tmux";
 import { errorJson, json } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -30,6 +30,21 @@ export async function POST(request: NextRequest) {
     if (!chatId) return errorJson("chatId is required.", 400);
     const chat = context.data.chats.find((item) => item.id === chatId && item.workspaceId === context.workspace.id);
     if (!chat) return errorJson("Chat not found.", 404);
+
+    if (body.action === "start") {
+      const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
+      const providerConnection = [...context.data.providerConnections]
+        .reverse()
+        .find((item) => item.workspaceId === context.workspace.id && item.provider === provider);
+      const pane = await ensureCodexTmuxSession({
+        workspace: context.workspace,
+        chat,
+        provider,
+        providerConnection,
+        selectedRootPath: context.workspace.selectedTerraformRoot
+      });
+      return json({ pane });
+    }
 
     if (body.action === "choose") {
       const index = Number(body.index);

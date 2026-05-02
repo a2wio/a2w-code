@@ -17,6 +17,7 @@ import {
   revertCommit,
   stageWorkspace,
   stashWorkspace,
+  syncWorkspaceBranch,
   unstageWorkspace
 } from "@/lib/git";
 import { errorJson, json } from "@/lib/http";
@@ -68,6 +69,10 @@ export async function POST(request: NextRequest) {
 
     if (action === "push") {
       return json(await pushWorkspace(context.workspace.id));
+    }
+
+    if (action === "sync") {
+      return json(await syncWorkspaceBranch(context.workspace.id));
     }
 
     if (action === "branch-current") {

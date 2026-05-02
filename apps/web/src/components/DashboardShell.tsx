@@ -53,6 +53,7 @@ export function DashboardShell({
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [modal, setModal] = useState<ShellModal>(null);
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
+  const [creatingChat, setCreatingChat] = useState(false);
   const [chatList, setChatList] = useState(chats);
   const threads = buildChatThreads(chatList);
   const latestThread = threads[0];
@@ -129,6 +130,36 @@ export function DashboardShell({
     }
   }
 
+  async function createChat() {
+    if (creatingChat) return;
+    setCreatingChat(true);
+    try {
+      const response = await fetch("/api/chats", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await response.json();
+      if (!response.ok || !data.chat?.id) throw new Error(data.error || "Could not create chat.");
+      setChatList((current) => current.some((item) => item.id === data.chat.id)
+        ? current.map((item) => item.id === data.chat.id ? data.chat : item)
+        : [data.chat, ...current]);
+      window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
+      setNavigationOpen(false);
+      router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
+      void fetch("/api/codex/tmux", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chatId: data.chat.id, action: "start" })
+      }).catch(() => undefined);
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setCreatingChat(false);
+    }
+  }
+
   return (
     <main className="h-full overflow-hidden border border-gray-200 bg-white text-black">
       <div className="flex h-full">
@@ -150,7 +181,9 @@ export function DashboardShell({
             isChat={isChat}
             newChatActive={newChatActive}
             activeModal={modal}
+            creatingChat={creatingChat}
             onOpen={() => setNavigationOpen((current) => !current)}
+            onNewChat={createChat}
             onOpenModal={(nextModal) => {
               setModal(nextModal);
               setNavigationOpen(false);
@@ -171,8 +204,10 @@ export function DashboardShell({
               homeHref={homeHref}
               activeModal={modal}
               savingChatId={savingChatId}
+              creatingChat={creatingChat}
               onRenameChat={renameChat}
               onDeleteChat={deleteChat}
+              onNewChat={createChat}
               onOpenModal={(nextModal) => {
                 setModal(nextModal);
                 setNavigationOpen(false);
@@ -223,7 +258,9 @@ function CompactSidebar({
   isChat,
   newChatActive,
   activeModal,
+  creatingChat,
   onOpen,
+  onNewChat,
   onOpenModal
 }: {
   workspace: Workspace;
@@ -232,7 +269,9 @@ function CompactSidebar({
   isChat: boolean;
   newChatActive: boolean;
   activeModal: ShellModal;
+  creatingChat: boolean;
   onOpen: () => void;
+  onNewChat: () => void;
   onOpenModal: (modal: Exclude<ShellModal, null>) => void;
 }) {
   return (
@@ -250,16 +289,18 @@ function CompactSidebar({
       </div>
 
       <div className="border-b border-gray-200 p-2">
-        <Link
-          href="/dashboard/agent?chat=new"
+        <button
+          type="button"
+          onClick={onNewChat}
+          disabled={creatingChat}
           className={`grid h-11 w-full place-items-center rounded-xl text-sm transition ${
             newChatActive ? "bg-[#eeeeec] text-neutral-950" : "text-gray-500 hover:bg-neutral-100 hover:text-black"
-          }`}
+          } disabled:cursor-wait disabled:text-gray-300`}
           aria-label="New chat"
           title="New chat"
         >
-          <Icon name="fa-plus" />
-        </Link>
+          <Icon name={creatingChat ? "fa-circle-notch fa-spin" : "fa-plus"} />
+        </button>
       </div>
 
       <div className="sidebar-scrollbar min-h-0 flex-1 overflow-auto px-2 py-3">
@@ -318,8 +359,10 @@ function ExpandedSidebar({
   homeHref,
   activeModal,
   savingChatId,
+  creatingChat,
   onRenameChat,
   onDeleteChat,
+  onNewChat,
   onOpenModal,
   onNavigate
 }: {
@@ -331,8 +374,10 @@ function ExpandedSidebar({
   homeHref: string;
   activeModal: ShellModal;
   savingChatId: string | null;
+  creatingChat: boolean;
   onRenameChat: (chatId: string, title: string) => Promise<void>;
   onDeleteChat: (chatId: string) => Promise<void>;
+  onNewChat: () => void;
   onOpenModal: (modal: Exclude<ShellModal, null>) => void;
   onNavigate: () => void;
 }) {
@@ -389,17 +434,18 @@ function ExpandedSidebar({
       </div>
 
       <div className="border-b border-gray-200 p-3">
-        <Link
-          href="/dashboard/agent?chat=new"
-          onClick={onNavigate}
+        <button
+          type="button"
+          onClick={onNewChat}
+          disabled={creatingChat}
           className={`flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-semibold transition ${
             newChatActive ? "bg-[#eeeeec] text-neutral-950" : "text-gray-600 hover:bg-neutral-100 hover:text-black"
-          }`}
+          } disabled:cursor-wait disabled:text-gray-300`}
           aria-current={newChatActive ? "page" : undefined}
         >
-          <Icon name="fa-plus" />
-          <span>New chat</span>
-        </Link>
+          <Icon name={creatingChat ? "fa-circle-notch fa-spin" : "fa-plus"} />
+          <span>{creatingChat ? "Starting chat" : "New chat"}</span>
+        </button>
       </div>
 
       <div className="sidebar-scrollbar min-h-0 flex-1 overflow-auto p-3">

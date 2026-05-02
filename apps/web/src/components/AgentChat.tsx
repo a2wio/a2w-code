@@ -11,15 +11,6 @@ import { Modal } from "./Modal";
 import { Toast } from "./Toast";
 import { CodexFocusSphere, type CodexFocusAction, type CodexFocusStatus } from "./CodexFocusSphere";
 
-const promptSuggestions = [
-  "Run terraform fmt for my first resource.",
-  "Run terraform plan and tell me what will be created.",
-  "Show me the generated files before I apply.",
-  "/model",
-  "What is blocking this deployment?",
-  "Destroy the Terraform-managed first resource."
-];
-
 const slashCommands = [
   {
     command: "/model",
@@ -187,12 +178,16 @@ function isNearScrollBottom(element: HTMLDivElement | null) {
 }
 
 function readChatDisplayMode(): ChatDisplayMode {
-  if (typeof window === "undefined") return "transcript";
+  if (typeof window === "undefined") return "focus";
   try {
-    return window.localStorage.getItem(CHAT_DISPLAY_MODE_STORAGE_KEY) === "focus" ? "focus" : "transcript";
+    return window.localStorage.getItem(CHAT_DISPLAY_MODE_STORAGE_KEY) === "transcript" ? "transcript" : "focus";
   } catch {
-    return "transcript";
+    return "focus";
   }
+}
+
+function isUntitledChatTitle(title: string) {
+  return title.trim().toLowerCase() === "new chat";
 }
 
 function persistChatDisplayMode(mode: ChatDisplayMode) {
@@ -273,7 +268,9 @@ export function AgentChat({
   const [codexPane, setCodexPane] = useState<CodexTmuxPane | null>(null);
   const [activeProviderConnection, setActiveProviderConnection] = useState(providerConnection);
   const [slashIndex, setSlashIndex] = useState(0);
-  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("transcript");
+  const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("focus");
+  const [engagedChatIds, setEngagedChatIds] = useState<Set<string>>(() => new Set());
+  const [codexCancelFlash, setCodexCancelFlash] = useState(false);
   const [displayModeReady, setDisplayModeReady] = useState(false);
   const [allowNetwork, setAllowNetwork] = useState(false);
   const [mode, setMode] = useState<SandboxMode>("terraform-fmt");
@@ -281,7 +278,11 @@ export function AgentChat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const codexPickerKeyRequest = useRef(0);
-  const editorMode = activeChatId !== "new";
+  const focusSummaryPostKeyRef = useRef("");
+  const submitAbortRef = useRef<AbortController | null>(null);
+  const cancelFlashTimeoutRef = useRef<number | null>(null);
+  const newChatMode = activeChatId === "new";
+  const editorMode = !newChatMode;
   const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready && !codexPane.viewingTranscript && !codexPane.stagedInput);
   const codexStagedInput = codexBusy ? codexPane?.stagedInput : "";
   const slashQuery = slashCommandQuery(value);
@@ -297,10 +298,12 @@ export function AgentChat({
   const codexTurns = useMemo(() => parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output]);
 
   const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
+  const activeChat = useMemo(() => chatList.find((chat) => chat.id === activeChatId) || null, [activeChatId, chatList]);
   const visibleMessages = useMemo(() => {
     if (activeChatId === "new") return [];
     return messages.filter((message) => message.chatId === activeChatId);
   }, [activeChatId, messages]);
+  const freshChatMode = editorMode && Boolean(activeChat && isUntitledChatTitle(activeChat.title) && visibleMessages.length === 0 && !engagedChatIds.has(activeChatId));
 
   const selectedRoot = useMemo(() => {
     return roots.find((root) => root.path === selectedRootPath) || roots.find((root) => selectedPlanId && root.planId === selectedPlanId) || roots.at(-1) || null;
@@ -331,7 +334,9 @@ export function AgentChat({
       .at(-1) || null;
   }, [messages, plans]);
   const activeApprovalStatusPlan = approvalStatusPlan?.chatId === activeChatId ? approvalStatusPlan : null;
-  const focusModeActive = editorMode && displayMode === "focus";
+  const focusModeActive = editorMode && !freshChatMode && displayMode === "focus";
+  const minimalChatMode = newChatMode || freshChatMode;
+  const immersiveMode = focusModeActive || minimalChatMode;
   const focusState = useMemo(() => buildCodexFocusState({
     pane: codexPane,
     turns: codexTurns,
@@ -340,12 +345,45 @@ export function AgentChat({
     missingVariables: missingRequiredVariables.length,
     git,
     root: selectedRoot,
-    selectedRun
-  }), [codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
+    selectedRun,
+    chatSummary: activeChat?.focusSummary
+  }), [activeChat?.focusSummary, codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
+  const visualFocusStatus = codexCancelFlash ? "cancelled" : focusState.status;
+  const visualFocusLabel = codexCancelFlash ? "Stopped" : focusState.statusLabel;
+  const visualFocusDetail = codexCancelFlash ? "Codex was interrupted." : focusState.detail;
 
   useEffect(() => {
     setChatList(chats);
   }, [chats]);
+
+  useEffect(() => {
+    return () => {
+      if (cancelFlashTimeoutRef.current) window.clearTimeout(cancelFlashTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeChatId === "new" || !codexPane?.ready || !focusState.responseSummary) return;
+    if (activeChat?.focusSummary === focusState.responseSummary) return;
+
+    const postKey = `${activeChatId}:${focusState.responseSummary}`;
+    if (focusSummaryPostKeyRef.current === postKey) return;
+    focusSummaryPostKeyRef.current = postKey;
+
+    fetch(`/api/chats/${encodeURIComponent(activeChatId)}/focus-summary`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ summary: focusState.responseSummary })
+    })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (!data?.chat) return;
+        setChatList((current) => current.map((chat) => chat.id === data.chat.id ? data.chat : chat));
+      })
+      .catch(() => {
+        focusSummaryPostKeyRef.current = "";
+      });
+  }, [activeChat?.focusSummary, activeChatId, codexPane?.ready, focusState.responseSummary]);
 
   useEffect(() => {
     setDisplayMode(readChatDisplayMode());
@@ -464,14 +502,25 @@ export function AgentChat({
 
     function cancelCodexOnEscape(event: KeyboardEvent) {
       if (event.defaultPrevented || event.key !== "Escape" || event.repeat) return;
-      if (!codexBusy && !codexPicker) return;
+      const cancellable = loading || Boolean(pendingStatus) || codexBusy || Boolean(codexPicker) || Boolean(codexPane?.running && !codexPane.ready);
+      if (!cancellable) return;
       event.preventDefault();
-      void sendCodexControlKey("escape");
+      submitAbortRef.current?.abort();
+      submitAbortRef.current = null;
+      setLoading(false);
+      setPendingStatus(null);
+      if (cancelFlashTimeoutRef.current) window.clearTimeout(cancelFlashTimeoutRef.current);
+      setCodexCancelFlash(true);
+      cancelFlashTimeoutRef.current = window.setTimeout(() => {
+        setCodexCancelFlash(false);
+        cancelFlashTimeoutRef.current = null;
+      }, 1500);
+      void sendCodexControlKey("escape", { flashCancel: true });
     }
 
     window.addEventListener("keydown", cancelCodexOnEscape);
     return () => window.removeEventListener("keydown", cancelCodexOnEscape);
-  }, [activeChatId, codexBusy, codexPicker, editorMode]);
+  }, [activeChatId, codexBusy, codexPane?.ready, codexPane?.running, codexPicker, editorMode, loading, pendingStatus]);
 
   useEffect(() => {
     if (!pendingStatus || (!pendingStatus.startsWith("Opening Codex") && !pendingStatus.startsWith("Running /"))) return;
@@ -519,13 +568,42 @@ export function AgentChat({
     if (slashMode) return;
     const message = value.trim();
     if (!message) return;
+    const startingNewChat = activeChatId === "new";
+    const submitController = new AbortController();
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = submitController;
     setLoading(true);
 
     try {
+      let targetChatId = activeChatId;
+      if (startingNewChat) {
+        setPendingStatus("Starting Codex chat...");
+        const chatResponse = await fetch("/api/chats", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+          signal: submitController.signal
+        });
+        const chatData = await chatResponse.json();
+        if (!chatResponse.ok || !chatData.chat?.id) throw new Error(chatData.error || "Could not create chat.");
+        targetChatId = chatData.chat.id;
+        setChatList((current) => current.some((item) => item.id === chatData.chat.id)
+          ? current.map((item) => item.id === chatData.chat.id ? chatData.chat : item)
+          : [chatData.chat, ...current]);
+        window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: chatData.chat }));
+        setActiveChatId(chatData.chat.id);
+        router.replace(`/dashboard/agent?chat=${encodeURIComponent(chatData.chat.id)}`);
+        setPendingStatus("Submitting to Codex...");
+      }
+      if (targetChatId !== "new") {
+        setEngagedChatIds((current) => new Set(current).add(targetChatId));
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, provider, chatId: activeChatId === "new" ? undefined : activeChatId, rootPath: selectedRoot?.path })
+        body: JSON.stringify({ message, provider, chatId: targetChatId === "new" ? undefined : targetChatId, rootPath: selectedRoot?.path }),
+        signal: submitController.signal
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not generate plan.");
@@ -545,9 +623,14 @@ export function AgentChat({
       if (data.chat?.id) router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
       else router.refresh();
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       flash(error instanceof Error ? error.message : String(error));
     } finally {
-      setLoading(false);
+      if (submitAbortRef.current === submitController) submitAbortRef.current = null;
+      if (!submitController.signal.aborted) {
+        setLoading(false);
+        setPendingStatus(null);
+      }
     }
   }
 
@@ -972,7 +1055,7 @@ export function AgentChat({
   return (
     <>
       <section className="motion-enter relative flex h-full w-full overflow-hidden bg-white">
-        {editorMode ? (
+        {editorMode && !freshChatMode ? (
           <EditorFileRail
             files={editorFiles}
             git={git}
@@ -980,8 +1063,8 @@ export function AgentChat({
             onOpenFile={openFilePanel}
           />
         ) : null}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {focusModeActive ? null : (
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+          {immersiveMode ? null : (
             <div className="relative flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
                 {activeChatId !== "new" && selectedRoot ? (
@@ -1001,17 +1084,32 @@ export function AgentChat({
             </div>
           )}
 
-          {focusModeActive ? (
+          {minimalChatMode ? (
             <div className="relative min-h-0 flex-1 overflow-hidden">
               <CodexFocusSphere
-                status={focusState.status}
-                statusLabel={focusState.statusLabel}
-                detail={focusState.detail}
+                status="idle"
+                statusLabel='"What do you want me to do?"'
+                detail=""
+                rootName="workspace"
+                changedFiles={0}
+                additions={0}
+                deletions={0}
+                actions={[]}
+                presentation="new-chat"
+              />
+            </div>
+          ) : focusModeActive ? (
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              <CodexFocusSphere
+                status={visualFocusStatus}
+                statusLabel={visualFocusLabel}
+                detail={visualFocusDetail}
                 rootName={focusState.rootName}
                 changedFiles={focusState.changedFiles}
                 additions={focusState.additions}
                 deletions={focusState.deletions}
                 actions={focusState.actions}
+                responseSummary={focusState.responseSummary}
                 onShowTranscript={() => setDisplayMode("transcript")}
               />
               <div className="absolute left-2 top-2 z-40 sm:left-4 sm:top-4">
@@ -1038,34 +1136,24 @@ export function AgentChat({
             </div>
           ) : (
             <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
-              {editorMode ? (
-                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                  <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
-                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
-                </div>
-              ) : visibleMessages.length ? (
-                <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                  {visibleMessages.map((message) => (
-                    <MessageBubble
-                      key={message.id}
-                      message={message}
-                      onAction={handleMessageAction}
-                    />
-                  ))}
-                  {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
-                  {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
-                  {loading && !pendingStatus ? <ThinkingBubble /> : null}
-                </div>
-              ) : (
-                pendingStatus ? <PendingBubble message={pendingStatus} centered /> : loading ? <ThinkingBubble centered /> : <EmptyChat onPick={setValue} />
-              )}
+              <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
+                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
+                {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
+                {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
+                {loading && !pendingStatus ? <ThinkingBubble /> : null}
+              </div>
             </div>
           )}
 
-          <form onSubmit={submit} className={`shrink-0 px-3 py-2 sm:px-5 ${focusModeActive ? "h-[144px] border-t-0 bg-[#fbfbf9]" : "h-[168px] border-t border-gray-100 bg-white"}`}>
-            {!focusModeActive ? (
+          <form
+            onSubmit={submit}
+            className={
+              minimalChatMode
+                ? "absolute inset-x-0 top-[calc(67%+2.25rem)] z-30 px-3 py-0 sm:px-5"
+                : `shrink-0 px-3 py-2 sm:px-5 ${immersiveMode ? "h-[144px] border-t-0 bg-[#fbfbf9]" : "h-[168px] border-t border-gray-100 bg-white"}`
+            }
+          >
+            {!focusModeActive && editorMode && !freshChatMode ? (
               <div className="mx-auto max-w-3xl">
                 <TerraformActionBar
                   plan={selectedPlan}
@@ -1088,7 +1176,7 @@ export function AgentChat({
               </div>
             ) : null}
 
-            <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${focusModeActive ? "mt-0" : "mt-2"}`}>
+            <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${immersiveMode ? "mt-0" : "mt-2"}`}>
               {codexPicker ? (
                 <CodexChoicePicker picker={codexPicker} chatId={activeChatId} onPane={setCodexPane} onKey={(key) => sendCodexControlKey(key, { requirePicker: true })} />
               ) : slashOpen ? (
@@ -1151,21 +1239,23 @@ export function AgentChat({
                   <Icon name="fa-arrow-up" />
                 </button>
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1 pt-2">
-                <p className="text-xs text-gray-500">Chat is for prompts, replies, and sandbox output.</p>
-                {missingRequiredVariables.length ? (
-                  <button type="button" onClick={openVariables} className="text-xs font-semibold text-amber-700 transition hover:text-amber-900">
-                    {missingRequiredVariables.length} input{missingRequiredVariables.length === 1 ? "" : "s"} needed
-                  </button>
-                ) : selectedPlan ? (
-                  <button type="button" onClick={() => setPlanModalOpen(true)} className="text-xs font-medium text-gray-500 transition hover:text-black">
-                    Current plan: {selectedPlan.title}
-                  </button>
-                ) : null}
-              </div>
+              {minimalChatMode ? null : (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1 pt-2">
+                  <p className="text-xs text-gray-500">Chat is for prompts, replies, and sandbox output.</p>
+                  {missingRequiredVariables.length ? (
+                    <button type="button" onClick={openVariables} className="text-xs font-semibold text-amber-700 transition hover:text-amber-900">
+                      {missingRequiredVariables.length} input{missingRequiredVariables.length === 1 ? "" : "s"} needed
+                    </button>
+                  ) : selectedPlan ? (
+                    <button type="button" onClick={() => setPlanModalOpen(true)} className="text-xs font-medium text-gray-500 transition hover:text-black">
+                      Current plan: {selectedPlan.title}
+                    </button>
+                  ) : null}
+                </div>
+              )}
             </div>
           </form>
-          <ChatStatusBar provider={provider} providerConnection={activeProviderConnection} git={git} onCredentialsClick={() => setCredentialsOpen(true)} />
+          {editorMode && !freshChatMode ? <ChatStatusBar provider={provider} providerConnection={activeProviderConnection} git={git} onCredentialsClick={() => setCredentialsOpen(true)} /> : null}
         </div>
 
         {filePanelOpen ? (
@@ -1221,6 +1311,7 @@ export function AgentChat({
           onClose={() => setCommitPushOpen(false)}
           onInit={() => gitAction("init", {}, "Git initialized")}
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
+          onSync={() => gitAction("sync", {}, "Repository synced")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
           onCommitAndPush={commitAllAndPush}
           onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
@@ -1253,6 +1344,7 @@ export function AgentChat({
           onStage={(paths) => gitAction("stage", { paths }, paths.length ? "File staged" : "All changes staged")}
           onUnstage={(paths) => gitAction("unstage", { paths }, paths.length ? "File unstaged" : "All changes unstaged")}
           onCommit={(mode) => gitAction("commit", { message: commitMessage, mode }, "Workspace changes committed")}
+          onSync={() => gitAction("sync", {}, "Repository synced")}
           onPush={() => gitAction("push", {}, "Branch pushed")}
           onCreateBranch={(branch) => gitAction("branch-current", { branch }, "Branch created from current HEAD")}
           onStash={(includeUntracked) => gitAction("stash", { message: stashMessage, includeUntracked }, "Changes stashed")}
@@ -2108,36 +2200,6 @@ function terraformCallDirs(plan: InfraPlan) {
   return [...dirs].sort();
 }
 
-function EmptyChat({
-  onPick
-}: {
-  onPick: (prompt: string) => void;
-}) {
-  return (
-    <div className="mx-auto flex min-h-[56vh] max-w-3xl flex-col items-center justify-center text-center">
-      <span className="grid h-14 w-14 place-items-center rounded-[1.25rem] bg-black text-white shadow-xl shadow-black/10">
-        <Icon name="fa-message" />
-      </span>
-      <h2 className="mt-6 text-4xl font-semibold tracking-[-0.04em]">Deploy from chat.</h2>
-      <p className="mt-4 max-w-xl text-sm leading-7 text-gray-600">
-        Generate or edit files from the prompt. Terraform controls stay pinned above the input.
-      </p>
-      <div className="mt-8 grid w-full gap-3 sm:grid-cols-2">
-        {promptSuggestions.map((prompt) => (
-          <button
-            key={prompt}
-            type="button"
-            onClick={() => onPick(prompt)}
-            className="rounded-[1.25rem] border border-gray-200 bg-[#fbfbf9] p-4 text-left text-sm leading-6 text-gray-700 transition hover:border-gray-300 hover:bg-white"
-          >
-            {prompt}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function SlashCommandPalette({
   commands,
   activeIndex,
@@ -2433,6 +2495,7 @@ function CodexStatusLine({ pane }: { pane: CodexTmuxPane | null }) {
 type CodexPaneTurn = {
   prompt: string;
   response: string;
+  focusSummary?: string;
   actions: CodexPaneAction[];
 };
 
@@ -2462,7 +2525,8 @@ function buildCodexFocusState({
   missingVariables,
   git,
   root,
-  selectedRun
+  selectedRun,
+  chatSummary
 }: {
   pane: CodexTmuxPane | null;
   turns: CodexPaneTurn[];
@@ -2472,6 +2536,7 @@ function buildCodexFocusState({
   git: GitWorkspaceStatus;
   root: TerraformRoot | null;
   selectedRun?: SandboxRun | null;
+  chatSummary?: string;
 }): {
   status: CodexFocusStatus;
   statusLabel: string;
@@ -2481,6 +2546,7 @@ function buildCodexFocusState({
   additions: number;
   deletions: number;
   actions: CodexFocusAction[];
+  responseSummary?: string;
 } {
   const latestTurn = turns.at(-1);
   const latestActions = latestTurn?.actions || [];
@@ -2501,6 +2567,8 @@ function buildCodexFocusState({
 
   const statusLabel = focusStatusLabel(status, pendingStatus, activeAction, missingVariables);
   const detail = focusStatusDetail(status, git.files.length, rootName, activeAction, selectedRun);
+  const savedSummary = chatSummary ? cleanFocusSummary(chatSummary) : "";
+  const responseSummary = running ? "" : latestTurn?.focusSummary || savedSummary || (pane?.ready && latestTurn?.response ? summarizeFocusResponse(latestTurn.response) : "");
 
   return {
     status,
@@ -2514,7 +2582,8 @@ function buildCodexFocusState({
       kind: action.kind,
       label: action.label,
       detail: action.detail
-    }))
+    })),
+    responseSummary
   };
 }
 
@@ -2546,16 +2615,77 @@ function focusStatusDetail(
   return "Use this mode when you care more about repository movement than every terminal line.";
 }
 
+function parseFocusSummaryLine(line: string): string | null {
+  const match = line.match(/^(?:•\s*)?A2W_FOCUS_SUMMARY:\s*(.+)$/i);
+  if (!match) return null;
+  return cleanFocusSummary(match[1]);
+}
+
+function summarizeFocusResponse(response: string) {
+  const clean = response
+    .split("\n")
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .filter((line) => line && !/^A2W_FOCUS_SUMMARY:/i.test(line) && !/^\/\s*T R A N S C R I P T/i.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return "";
+
+  const usefulSentence = clean.match(/(?:I|Codex|Terraform|Git|The workspace|Workspace|Done|Created|Updated|Removed|Renamed|Added|Fixed)\b[^.!?]*(?:[.!?]|$)/i)?.[0] || clean;
+  return cleanFocusSummary(usefulSentence);
+}
+
+function cleanFocusSummary(value: string) {
+  const summary = value
+    .replace(/\s+/g, " ")
+    .replace(/^["'“”]+|["'“”]+$/g, "")
+    .trim()
+    .slice(0, 220);
+  if (!summary) return "";
+  if (/^Greeted the (?:user|operator) and asked what (?:they|the user|the operator) want(?:s)? to work on\.?$/i.test(summary)) {
+    return "I'm ready. What would you like to work on?";
+  }
+  if (isThirdPersonFocusSummary(summary)) return "";
+  return summary.replace(/[.。!?]*$/, ".");
+}
+
+function isThirdPersonFocusSummary(summary: string) {
+  return /^(?:I\s+)?(?:greeted|asked|told|explained|summarized|informed|confirmed|mentioned|noted|answered|responded to|described|outlined|reported)\s+(?:the\s+)?(?:user|operator)\b/i.test(summary);
+}
+
 function parseCodexPaneTurns(output: string): CodexPaneTurn[] {
   const turns: CodexPaneTurn[] = [];
   let current: CodexPaneTurn | null = null;
   let skippingPrimer = false;
+  let collectingWrappedPrompt = false;
+  let skippingFocusSummarySkill = false;
+  let wrappedPromptLines: string[] = [];
 
   for (const rawLine of output.split("\n")) {
     const line = rawLine.trimEnd();
     const plain = line.trim().replace(/^│\s?/, "").replace(/\s?│$/, "").trim();
 
     if (shouldSkipCodexPaneLine(plain)) continue;
+    if (collectingWrappedPrompt) {
+      if (plain.startsWith("A2W focus-summary skill:")) {
+        skippingFocusSummarySkill = true;
+        continue;
+      }
+      if (plain.startsWith("A2W_END_OPERATOR_CONTEXT")) {
+        const prompt = wrappedPromptLines.join("\n").trim();
+        if (prompt) {
+          current = { prompt, response: "", actions: [] };
+          turns.push(current);
+        }
+        collectingWrappedPrompt = false;
+        skippingFocusSummarySkill = false;
+        wrappedPromptLines = [];
+        continue;
+      }
+      if (skippingFocusSummarySkill) continue;
+      if (plain) wrappedPromptLines.push(plain);
+      continue;
+    }
     if (plain.startsWith("You are Codex inside ")) {
       skippingPrimer = true;
       continue;
@@ -2564,22 +2694,32 @@ function parseCodexPaneTurns(output: string): CodexPaneTurn[] {
       if (plain.startsWith("Operator request:")) skippingPrimer = false;
       continue;
     }
-    if (plain.startsWith("Operator request:")) continue;
+    if (plain.startsWith("Operator request:")) {
+      collectingWrappedPrompt = true;
+      skippingFocusSummarySkill = false;
+      wrappedPromptLines = [];
+      continue;
+    }
 
     if (plain.startsWith("›")) {
       const prompt = plain.replace(/^›\s*/, "").trim();
-      if (prompt.startsWith("/")) {
-        current = null;
+      if (prompt.startsWith("Operator request:")) {
+        collectingWrappedPrompt = true;
+        skippingFocusSummarySkill = false;
+        wrappedPromptLines = [];
         continue;
       }
-      if (!prompt || isCodexPromptPlaceholder(prompt)) continue;
-      current = { prompt, response: "", actions: [] };
-      turns.push(current);
+      current = null;
       continue;
     }
 
     if (!current) continue;
     if (!plain && !current.response) continue;
+    const focusSummary = parseFocusSummaryLine(plain);
+    if (focusSummary !== null) {
+      if (focusSummary) current.focusSummary = focusSummary;
+      continue;
+    }
     const action = parseCodexActionLine(plain);
     if (action) {
       current.actions.push(action);
@@ -2768,17 +2908,6 @@ function shouldSkipCodexPaneLine(plain: string) {
   if (plain.startsWith("Tip:")) return true;
   if (plain.startsWith("gpt-") && plain.includes("·")) return true;
   return /^[╭╰╮╯│─>_ ]+$/.test(plain);
-}
-
-function isCodexPromptPlaceholder(value: string) {
-  const clean = value.trim().toLowerCase();
-  if (!clean) return true;
-  if (clean === "explain this codebase") return true;
-  if (clean === "review my changes") return true;
-  if (clean === "find and fix a bug") return true;
-  if (/^type\s+(a\s+)?message/.test(clean)) return true;
-  if (/^(ask|message)\s+codex\b/.test(clean)) return true;
-  return /^(find and fix|write tests|explain|review)\b/.test(clean) && clean.includes("@filename");
 }
 
 function MessageBubble({
@@ -3098,6 +3227,7 @@ function CommitPushModal({
   onClose,
   onInit,
   onCommit,
+  onSync,
   onPush,
   onCommitAndPush,
   onCreateBranch
@@ -3109,6 +3239,7 @@ function CommitPushModal({
   onClose: () => void;
   onInit: () => void;
   onCommit: (mode: "all" | "staged") => void;
+  onSync: () => void;
   onPush: () => void;
   onCommitAndPush: () => void;
   onCreateBranch: (branch: string) => void;
@@ -3118,6 +3249,7 @@ function CommitPushModal({
   const detached = isDetachedGit(git);
   const [detachedBranchName, setDetachedBranchName] = useState(defaultDetachedBranchName(git));
   const canPush = Boolean(git.remoteUrl) && (git.ahead || 0) > 0 && !detached;
+  const canSync = Boolean(git.remoteUrl) && Boolean(git.upstream) && !detached;
   const canCommit = git.initialized && changedCount > 0;
   const canCommitAndPush = canCommit && Boolean(git.remoteUrl) && !detached;
 
@@ -3161,6 +3293,7 @@ function CommitPushModal({
                     {changedCount ? `${changedCount} changed file${changedCount === 1 ? "" : "s"}` : "No local changes"}
                     {stagedCount ? ` · ${stagedCount} staged` : ""}
                     {(git.ahead || 0) > 0 ? ` · ${git.ahead} commit${git.ahead === 1 ? "" : "s"} ahead` : ""}
+                    {(git.behind || 0) > 0 ? ` · ${git.behind} behind` : ""}
                   </p>
                 </div>
                 {!git.remoteUrl ? (
@@ -3180,6 +3313,7 @@ function CommitPushModal({
               <div className="flex flex-wrap justify-end gap-2">
                 <GitButton label="Commit staged" tooltip="Commit only staged files" icon="fa-check" primary disabled={loading || !stagedCount} onClick={() => onCommit("staged")} />
                 <GitButton label="Commit all" tooltip="Stage and commit all local changes" icon="fa-check-double" primary disabled={loading || !canCommit} onClick={() => onCommit("all")} />
+                <GitButton label={(git.behind || 0) > 0 ? `Sync ${git.behind}` : "Sync"} tooltip="Fetch and rebase this branch before pushing" icon="fa-rotate" disabled={loading || !canSync} onClick={onSync} />
                 <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip="Push committed changes to the remote branch" icon="fa-arrow-up" disabled={loading || !canPush} onClick={onPush} />
                 <GitButton label="Commit all & push" tooltip="Stage all changes, commit, then push" icon="fa-cloud-arrow-up" primary disabled={loading || !canCommitAndPush} onClick={onCommitAndPush} />
               </div>
@@ -3364,6 +3498,7 @@ function GitModal({
   onStage,
   onUnstage,
   onCommit,
+  onSync,
   onPush,
   onCreateBranch,
   onStash,
@@ -3389,6 +3524,7 @@ function GitModal({
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onCommit: (mode: "all" | "staged") => void;
+  onSync: () => void;
   onPush: () => void;
   onCreateBranch: (branch: string) => void;
   onStash: (includeUntracked: boolean) => void;
@@ -3415,6 +3551,7 @@ function GitModal({
   const dirty = git.initialized && !git.clean;
   const stagedCount = git.files.filter((file) => Boolean(file.indexStatus && file.indexStatus !== "?")).length;
   const unstagedCount = git.files.filter((file) => Boolean(file.worktreeStatus)).length;
+  const canSync = Boolean(git.remoteUrl) && Boolean(git.upstream) && !detached;
 
   useEffect(() => {
     if (detached) setDetachedBranchName(defaultDetachedBranchName(git));
@@ -3481,6 +3618,7 @@ function GitModal({
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <GitPanelFocusButton focused={focusedGitPanel === "history"} onClick={() => setFocusedGitPanel(focusedGitPanel === "history" ? null : "history")} />
+                  <GitButton label={(git.behind || 0) > 0 ? `Sync ${git.behind}` : "Sync"} tooltip={detached ? "Create a branch before syncing" : "Fetch and rebase this branch before pushing"} icon="fa-rotate" disabled={loading || !canSync} onClick={onSync} />
                   <GitButton label={(git.ahead || 0) > 0 ? `Push ${git.ahead}` : "Push"} tooltip={detached ? "Create a branch from this detached HEAD before pushing" : "Push committed changes to the remote branch"} icon="fa-arrow-up" disabled={loading || !git.remoteUrl || detached} onClick={onPush} />
                 </div>
               </div>

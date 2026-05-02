@@ -69,6 +69,8 @@ export type Chat = {
   workspaceId: string;
   title: string;
   codexThreadId?: string;
+  focusSummary?: string;
+  focusSummaryUpdatedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
