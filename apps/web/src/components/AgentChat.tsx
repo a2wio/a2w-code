@@ -353,6 +353,7 @@ export function AgentChat({
   }, [slashQuery, workspaceMode]);
   const slashOpen = slashMatches.length > 0;
   const slashMode = slashQuery !== null;
+  const slashPaletteOpen = slashOpen && !mobileActionsOpen;
   const selectedSlashCommand = slashMatches[slashIndex] || null;
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
   const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
@@ -531,6 +532,11 @@ export function AgentChat({
   useEffect(() => {
     setSlashIndex(0);
   }, [slashQuery]);
+
+  useEffect(() => {
+    if (!mobileActionsOpen) return;
+    if (value.trim() === "/") setValue("");
+  }, [mobileActionsOpen, value]);
 
   useEffect(() => {
     if (!editorMode || activeChatId === "new") return;
@@ -1447,7 +1453,7 @@ export function AgentChat({
             <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${immersiveMode ? "mt-0" : "mt-2"}`}>
               {codexPicker ? (
                 <CodexChoicePicker picker={codexPicker} chatId={activeChatId} onPane={setCodexPane} onKey={(key) => sendCodexControlKey(key, { requirePicker: true })} />
-              ) : slashOpen ? (
+              ) : slashPaletteOpen ? (
                 <SlashCommandPalette
                   commands={slashMatches}
                   activeIndex={slashIndex}
@@ -1462,17 +1468,17 @@ export function AgentChat({
                   onChange={(event) => setValue(event.target.value)}
                   onKeyDown={(event) => {
                     if (handleCodexPickerKeyDown(event)) return;
-                    if (slashOpen && event.key === "ArrowDown") {
+                    if (slashPaletteOpen && event.key === "ArrowDown") {
                       event.preventDefault();
                       setSlashIndex((current) => (current + 1) % slashMatches.length);
                       return;
                     }
-                    if (slashOpen && event.key === "ArrowUp") {
+                    if (slashPaletteOpen && event.key === "ArrowUp") {
                       event.preventDefault();
                       setSlashIndex((current) => (current - 1 + slashMatches.length) % slashMatches.length);
                       return;
                     }
-                    if (slashOpen && event.key === "Tab") {
+                    if (slashPaletteOpen && event.key === "Tab") {
                       event.preventDefault();
                       completeSlashCommand();
                       return;
@@ -1483,7 +1489,7 @@ export function AgentChat({
                         void executeSlashCommand(exactSlashCommand);
                         return;
                       }
-                      if (slashOpen && slashQuery !== selectedSlashCommand?.command) {
+                      if (slashPaletteOpen && slashQuery !== selectedSlashCommand?.command) {
                         completeSlashCommand();
                         return;
                       }
