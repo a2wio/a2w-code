@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
     const run = await runSandbox({
       workspaceId: context.workspace.id,
       workspaceMode: activeMode,
+      chatId: chat?.id,
       planId,
       rootPath,
       mode,

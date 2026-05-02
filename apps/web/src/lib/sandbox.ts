@@ -41,6 +41,7 @@ const FORWARDED_CLOUD_ENV = [
 export async function runSandbox(input: {
   workspaceId: string;
   workspaceMode?: WorkspaceMode;
+  chatId?: string;
   planId?: string;
   rootPath?: string;
   mode: SandboxMode;
@@ -112,6 +113,7 @@ export async function runSandbox(input: {
     data.sandboxRuns.push({
       id,
       workspaceId: input.workspaceId,
+      chatId: input.chatId,
       planId: input.planId,
       rootPath: input.rootPath,
       mode: input.mode,
@@ -177,6 +179,7 @@ export async function runSandbox(input: {
   const run: SandboxRun = {
     id,
     workspaceId: input.workspaceId,
+    chatId: input.chatId,
     planId: input.planId,
     rootPath: input.rootPath,
     mode: input.mode,
