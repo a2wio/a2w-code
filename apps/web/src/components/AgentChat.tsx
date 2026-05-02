@@ -357,6 +357,7 @@ export function AgentChat({
   const selectedSlashCommand = slashMatches[slashIndex] || null;
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
   const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
+  const codexCancellable = editorMode && activeChatId !== "new" && !profileNeedsSetup && Boolean(loading || pendingStatus || codexBusy || codexPicker || (codexPane?.running && !codexPane.ready));
   const codexTurns = useMemo(() => parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output]);
 
   const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
@@ -419,6 +420,21 @@ export function AgentChat({
     : sandboxFailureFlash
       ? latestFailedSandboxRun ? `${modeLabel(latestFailedSandboxRun.mode)} needs review.` : "The latest sandbox action failed."
       : focusState.detail;
+
+  function cancelActiveCodex() {
+    if (!codexCancellable) return;
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = null;
+    setLoading(false);
+    setPendingStatus(null);
+    if (cancelFlashTimeoutRef.current) window.clearTimeout(cancelFlashTimeoutRef.current);
+    setCodexCancelFlash(true);
+    cancelFlashTimeoutRef.current = window.setTimeout(() => {
+      setCodexCancelFlash(false);
+      cancelFlashTimeoutRef.current = null;
+    }, 1500);
+    void sendCodexControlKey("escape", { flashCancel: true });
+  }
 
   useEffect(() => {
     setChatList(chats);
@@ -596,25 +612,14 @@ export function AgentChat({
 
     function cancelCodexOnEscape(event: KeyboardEvent) {
       if (event.defaultPrevented || event.key !== "Escape" || event.repeat) return;
-      const cancellable = loading || Boolean(pendingStatus) || codexBusy || Boolean(codexPicker) || Boolean(codexPane?.running && !codexPane.ready);
-      if (!cancellable) return;
+      if (!codexCancellable) return;
       event.preventDefault();
-      submitAbortRef.current?.abort();
-      submitAbortRef.current = null;
-      setLoading(false);
-      setPendingStatus(null);
-      if (cancelFlashTimeoutRef.current) window.clearTimeout(cancelFlashTimeoutRef.current);
-      setCodexCancelFlash(true);
-      cancelFlashTimeoutRef.current = window.setTimeout(() => {
-        setCodexCancelFlash(false);
-        cancelFlashTimeoutRef.current = null;
-      }, 1500);
-      void sendCodexControlKey("escape", { flashCancel: true });
+      cancelActiveCodex();
     }
 
     window.addEventListener("keydown", cancelCodexOnEscape);
     return () => window.removeEventListener("keydown", cancelCodexOnEscape);
-  }, [activeChatId, codexBusy, codexPane?.ready, codexPane?.running, codexPicker, editorMode, loading, pendingStatus]);
+  }, [activeChatId, codexBusy, codexCancellable, codexPane?.ready, codexPane?.running, codexPicker, editorMode, loading, pendingStatus, profileNeedsSetup]);
 
   useEffect(() => {
     if (!pendingStatus || (!pendingStatus.startsWith("Opening Codex") && !pendingStatus.startsWith("Running /"))) return;
@@ -1506,12 +1511,15 @@ export function AgentChat({
                   disabled={loading || codexBusy || profileNeedsSetup}
                 />
                 <button
-                  disabled={loading || codexBusy || slashMode || profileNeedsSetup || !value.trim()}
-                  className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
-                  type="submit"
-                  aria-label={slashMode ? "Slash commands run from keyboard" : "Send message"}
+                  disabled={codexCancellable ? false : loading || codexBusy || slashMode || profileNeedsSetup || !value.trim()}
+                  className={`grid h-10 w-10 shrink-0 place-items-center rounded-full text-white transition disabled:cursor-not-allowed disabled:bg-gray-300 ${
+                    codexCancellable ? "bg-red-600 hover:bg-red-700" : "bg-black hover:bg-gray-800"
+                  }`}
+                  type={codexCancellable ? "button" : "submit"}
+                  onClick={codexCancellable ? cancelActiveCodex : undefined}
+                  aria-label={codexCancellable ? "Stop Codex" : slashMode ? "Slash commands run from keyboard" : "Send message"}
                 >
-                  <Icon name="fa-arrow-up" />
+                  <Icon name={codexCancellable ? "fa-xmark" : "fa-arrow-up"} />
                 </button>
               </div>
               {minimalChatMode ? null : (
