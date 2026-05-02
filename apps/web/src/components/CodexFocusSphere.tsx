@@ -479,14 +479,14 @@ function ActionResponseSwitcher({
         {activePane === "sandbox" && sandboxAction ? (
           <SandboxActionCard action={sandboxAction} expanded={sandboxExpanded} onExpandedChange={setSandboxExpanded} />
         ) : (
-          <ActionNotificationReel actions={codexActions} />
+          <ActionNotificationReel actions={codexActions} mobileSingle />
         )}
       </div>
     </div>
   );
 }
 
-function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
+function ActionNotificationReel({ actions, mobileSingle = false }: { actions: CodexFocusAction[]; mobileSingle?: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -552,28 +552,31 @@ function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
       aria-live="polite"
     >
       <div className="flex min-h-full flex-col p-2">
-        {visibleActions.map((action, index) => (
-          <div
-            key={`${action.kind}-${action.label}-${action.detail || ""}-${index}`}
-            ref={(element) => {
-              itemRefs.current[index] = element;
-            }}
-            className={`motion-enter relative flex min-h-10 origin-center items-center gap-2 rounded-2xl border px-3 py-2 text-xs backdrop-blur-2xl ring-1 transition duration-300 ease-out ${index > 0 ? "-mt-2" : ""} ${
-              index === focusedIndex
-                ? "scale-[1.065] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
-                : "scale-[0.975] border-white/35 bg-white/[0.12] text-gray-400 ring-white/15"
-            }`}
-            style={{ zIndex: index === focusedIndex ? 80 : Math.max(1, 40 - Math.abs(index - focusedIndex)) }}
-          >
-            <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/40 text-[10px] transition-colors ${index === focusedIndex ? "text-gray-500" : "text-gray-300"}`}>
-              <Icon name={focusActionIcon(action.kind)} />
-            </span>
-            <span className="min-w-0 flex-1 truncate">
-              <span className={`font-semibold transition-colors ${index === focusedIndex ? "text-gray-700" : "text-gray-500"}`}>{action.label}</span>
-              {action.detail ? <span className={`ml-1 font-mono text-[11px] transition-colors ${index === focusedIndex ? "text-gray-400" : "text-gray-300"}`}>{action.detail}</span> : null}
-            </span>
-          </div>
-        ))}
+        {visibleActions.map((action, index) => {
+          const mobileHidden = mobileSingle && index !== visibleActions.length - 1 ? "max-sm:hidden" : "";
+          return (
+            <div
+              key={`${action.kind}-${action.label}-${action.detail || ""}-${index}`}
+              ref={(element) => {
+                itemRefs.current[index] = element;
+              }}
+              className={`motion-enter relative flex min-h-10 origin-center items-center gap-2 rounded-2xl border px-3 py-2 text-xs backdrop-blur-2xl ring-1 transition duration-300 ease-out ${mobileHidden} ${index > 0 ? "-mt-2 max-sm:mt-0" : ""} ${
+                index === focusedIndex
+                  ? "scale-[1.065] border-white/70 bg-white/[0.24] text-gray-600 ring-white/35"
+                  : "scale-[0.975] border-white/35 bg-white/[0.12] text-gray-400 ring-white/15"
+              }`}
+              style={{ zIndex: index === focusedIndex ? 80 : Math.max(1, 40 - Math.abs(index - focusedIndex)) }}
+            >
+              <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/40 text-[10px] transition-colors ${index === focusedIndex ? "text-gray-500" : "text-gray-300"}`}>
+                <Icon name={focusActionIcon(action.kind)} />
+              </span>
+              <span className="min-w-0 flex-1 truncate">
+                <span className={`font-semibold transition-colors ${index === focusedIndex ? "text-gray-700" : "text-gray-500"}`}>{action.label}</span>
+                {action.detail ? <span className={`ml-1 font-mono text-[11px] transition-colors ${index === focusedIndex ? "text-gray-400" : "text-gray-300"}`}>{action.detail}</span> : null}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

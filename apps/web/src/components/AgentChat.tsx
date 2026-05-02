@@ -1422,7 +1422,7 @@ export function AgentChat({
             className={
               minimalChatMode
                 ? "absolute inset-x-0 top-[calc(67%+2.25rem)] z-30 px-3 py-0 sm:px-5"
-                : `shrink-0 px-3 py-2 sm:px-5 ${immersiveMode ? "h-[132px] border-t-0 bg-[#fbfbf9] sm:h-[144px]" : "h-[124px] border-t border-gray-100 bg-white sm:h-[168px]"}`
+                : `shrink-0 px-3 pb-3 pt-1.5 sm:px-5 sm:py-2 ${immersiveMode ? "h-[132px] border-t-0 bg-[#fbfbf9] sm:h-[144px]" : "h-[124px] border-t border-gray-100 bg-white sm:h-[168px]"}`
             }
           >
             {!focusModeActive && editorMode && !freshChatMode ? (
@@ -2354,7 +2354,7 @@ function MobileWorkspaceLauncher({
   }
 
   return (
-    <div className="absolute right-3 top-3 z-50 lg:hidden">
+    <div className="absolute inset-x-3 top-3 z-50 flex justify-end lg:hidden">
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
@@ -2368,7 +2368,7 @@ function MobileWorkspaceLauncher({
       </button>
 
       {open ? (
-        <div className="sidebar-scrollbar absolute right-0 top-12 max-h-[calc(100vh-7rem)] w-[min(22rem,calc(100vw-1.5rem))] overflow-auto rounded-[1.5rem] border border-gray-200 bg-white/95 p-2 shadow-2xl shadow-black/15 backdrop-blur">
+        <div className="sidebar-scrollbar absolute right-0 top-12 max-h-[calc(100vh-7rem)] w-full max-w-[22rem] overflow-auto rounded-[1.5rem] border border-gray-200 bg-white/95 p-2 shadow-2xl shadow-black/15 backdrop-blur">
           <div className="grid gap-1">
             <ActionMenuButton icon="fa-folder-tree" label="Files" disabled={loading} onClick={() => run(onFiles)} />
             <ActionMenuButton icon={displayMode === "focus" ? "fa-message" : "fa-circle-nodes"} label={displayMode === "focus" ? "Inspect mode" : "Focus mode"} disabled={loading} onClick={() => run(onDisplayMode)} />
