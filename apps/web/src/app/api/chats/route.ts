@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getCurrentContext } from "@/lib/auth";
 import { updateData } from "@/lib/data";
 import { errorJson, json } from "@/lib/http";
+import { normalizeWorkspaceMode, workspaceMode } from "@/lib/workspace-mode";
 import type { Chat } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -12,12 +13,14 @@ export async function POST(request: Request) {
     if (!context) return errorJson("Unauthorized", 401);
     const body = await request.json();
     const title = body.title ? chatTitle(String(body.title)) : "New chat";
+    const mode = normalizeWorkspaceMode(body.mode || workspaceMode(context.workspace));
     const createdAt = new Date().toISOString();
 
     const chat: Chat = await updateData((data) => {
       const nextChat: Chat = {
         id: randomUUID(),
         workspaceId: context.workspace.id,
+        mode,
         title,
         createdAt,
         updatedAt: createdAt

@@ -11,7 +11,8 @@ import { cleanGitProvider, cleanRepositoryMode } from "@/lib/onboarding-git";
 import { publicProviderConnection, validateProviderConnection } from "@/lib/provider";
 import { encryptSecret } from "@/lib/secrets";
 import { terraformRootPathsFromPlan } from "@/lib/terraform-roots";
-import type { ProviderConnection } from "@/lib/types";
+import { normalizeWorkspaceMode } from "@/lib/workspace-mode";
+import type { Chat, ProviderConnection } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,59 @@ export async function POST(request: NextRequest) {
     if (!context) return errorJson("Unauthorized", 401);
 
     const body = await request.json();
+    const mode = normalizeWorkspaceMode(body.mode);
+    if (mode === "web") {
+      const codexEnabled = Boolean(body.codexEnabled);
+      const codexModel = sanitizeCodexModel(body.codexModel);
+      if (codexEnabled) {
+        const codexStatus = await getCodexLoginStatus();
+        if (!codexStatus.authenticated) {
+          return errorJson("Codex is not authenticated on this host. Run `codex login`, then verify Codex in onboarding.", 400);
+        }
+      }
+      const fallbackGitProvider = cleanGitProvider(body.gitProvider);
+      const fallbackRepositoryMode = cleanRepositoryMode(body.repositoryMode);
+      const gitConnection = context.data.gitConnections.find((item) => item.workspaceId === context.workspace.id && (item.mode || "infra") === "web");
+      const gitStatus = await getGitStatus(context.workspace.id, "web");
+      if (!gitConnection || !gitStatus.initialized) {
+        return errorJson("Confirm Git settings before opening the workspace.", 400);
+      }
+
+      const createdAt = new Date().toISOString();
+      const chatId = randomUUID();
+      const chat: Chat = {
+        id: chatId,
+        workspaceId: context.workspace.id,
+        mode: "web",
+        title: "New chat",
+        createdAt,
+        updatedAt: createdAt
+      };
+
+      await updateData((data) => {
+        const workspace = data.workspaces.find((item) => item.id === context.workspace.id);
+        if (!workspace) throw new Error("Workspace not found.");
+        workspace.mode = "web";
+        workspace.gitProvider = gitConnection.gitProvider || fallbackGitProvider;
+        workspace.repositoryMode = gitConnection.repositoryMode || fallbackRepositoryMode;
+        workspace.repositoryUrl = gitConnection.repositoryUrl || gitStatus.remoteUrl || "";
+        workspace.repositoryBranch = gitConnection.branch || gitStatus.branch || undefined;
+        workspace.onboardingCompletedAt = createdAt;
+        workspace.codexEnabled = codexEnabled;
+        workspace.codexModel = codexEnabled && codexModel ? codexModel : undefined;
+        data.chats.push(chat);
+        data.events.push({
+          id: randomUUID(),
+          workspaceId: context.workspace.id,
+          type: "workspace.onboarding_completed",
+          label: "Web workspace onboarding completed",
+          createdAt
+        });
+      });
+
+      return json({ chat }, 201);
+    }
+
     const provider = normalizeProvider(String(body.provider || "aws"));
     if (provider !== "aws" && provider !== "azure") {
       return errorJson("Onboarding currently supports AWS and Azure only.", 400);
@@ -38,8 +92,8 @@ export async function POST(request: NextRequest) {
     }
     const fallbackGitProvider = cleanGitProvider(body.gitProvider);
     const fallbackRepositoryMode = cleanRepositoryMode(body.repositoryMode);
-    const gitConnection = context.data.gitConnections.find((item) => item.workspaceId === context.workspace.id);
-    const gitStatus = await getGitStatus(context.workspace.id);
+    const gitConnection = context.data.gitConnections.find((item) => item.workspaceId === context.workspace.id && (item.mode || "infra") === "infra");
+    const gitStatus = await getGitStatus(context.workspace.id, "infra");
     if (!gitConnection || !gitStatus.initialized) {
       return errorJson("Confirm Git settings before creating the first resource.", 400);
     }
@@ -78,6 +132,7 @@ export async function POST(request: NextRequest) {
       const workspace = data.workspaces.find((item) => item.id === context.workspace.id);
       if (!workspace) throw new Error("Workspace not found.");
       workspace.cloudPreference = provider;
+      workspace.mode = "infra";
       workspace.gitProvider = gitProvider;
       workspace.repositoryMode = repositoryMode;
       workspace.repositoryUrl = configuredRepositoryUrl;
@@ -95,6 +150,7 @@ export async function POST(request: NextRequest) {
       data.chats.push({
         id: chatId,
         workspaceId: context.workspace.id,
+        mode: "infra",
         title: plan.title,
         createdAt,
         updatedAt: createdAt
@@ -104,6 +160,7 @@ export async function POST(request: NextRequest) {
         {
           id: randomUUID(),
           workspaceId: context.workspace.id,
+          mode: "infra",
           chatId,
           role: "user",
           content: `Create my first ${provider === "aws" ? "AWS Lambda" : "Azure Function"} resource.`,
@@ -112,6 +169,7 @@ export async function POST(request: NextRequest) {
         {
           id: randomUUID(),
           workspaceId: context.workspace.id,
+          mode: "infra",
           chatId,
           role: "assistant",
           content: `${plan.summary}\n\nI wrote the Terraform and function code into your project files. You can review the files, run the sandbox, then approve the plan.`,

@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Chat, CloudProvider, ProviderConnection, Workspace } from "./types";
 import { workspaceRepoRoot } from "./data";
+import { chatMode, workspaceModeLabel } from "./workspace-mode";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,7 +71,7 @@ export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: st
   }
 
   await clearCodexPromptBeforeSend(target);
-  await sendLiteral(target, codexTmuxOperatorPrompt(input.message));
+  await sendLiteral(target, codexTmuxOperatorPrompt(input));
   await sleep(220);
   await tmux(["send-keys", "-t", target, "Enter"]);
   await sleep(500);
@@ -110,7 +111,7 @@ export async function stopCodexTmuxSession(input: { workspace: Workspace; chatId
 }
 
 async function startCodexTmuxSession(input: CodexTmuxInput, sessionName: string) {
-  const repoRoot = workspaceRepoRoot(input.workspace.id);
+  const repoRoot = workspaceRepoRoot(input.workspace.id, chatMode(input.chat));
   const args = [
     "codex",
     "--no-alt-screen",
@@ -191,11 +192,34 @@ function codexBypassSandbox() {
   return process.env.A2W_CODEX_BYPASS_SANDBOX === "true";
 }
 
-function codexTmuxOperatorPrompt(message: string) {
-  if (message.trim().startsWith("/")) return message;
+function codexTmuxOperatorPrompt(input: CodexTmuxInput & { message: string }) {
+  const mode = chatMode(input.chat);
+  const profileRules = mode === "web"
+    ? [
+        "Workspace profile: Web / Next.js.",
+        "- Treat this repository as an application codebase, not an infrastructure-only repo.",
+        "- Prefer existing package scripts and project conventions before introducing new tooling.",
+        "- Do not run long-lived dev servers unless the operator explicitly asks.",
+        "- After code changes, recommend NPM lint, test, or build actions from the UI."
+      ]
+    : [
+        "Workspace profile: Infrastructure / Terraform.",
+        "- Follow the DStack Terraform layout exactly:",
+        "  - Reusable resource logic goes in infrastructure/terraform/modules/<provider>/<module>.",
+        "  - Deployable call directories go in infrastructure/terraform/providers/<provider>/<region>/<stack>.",
+        "  - Provider call directories call modules and own Terraform state.",
+        "  - Do not put cloud resource blocks directly in provider call directories.",
+        "- Do not run terraform apply, terraform destroy, or cloud-mutating CLI commands.",
+        "- After Terraform changes, recommend Terraform fmt, plan, review, approval, then apply."
+      ];
+
+  if (input.message.trim().startsWith("/")) return input.message;
   return [
+    `A2W-Code mode: ${workspaceModeLabel(mode)}.`,
+    ...profileRules,
+    "",
     "Operator request:",
-    message,
+    input.message,
     "",
     "A2W focus-summary skill:",
     "- After your normal final response, append one final protocol line exactly like this:",

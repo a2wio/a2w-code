@@ -1,8 +1,8 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { workspaceRepoRoot } from "./data";
-import { isHiddenWorkspaceFile, workspaceGitignore } from "./workspace-ignore.js";
-import type { InfraPlan, Workspace } from "./types";
+import { buildWorkspaceIgnoreMatcher, isHiddenWorkspaceFile, workspaceGitignore } from "./workspace-ignore.js";
+import type { InfraPlan, Workspace, WorkspaceMode } from "./types";
 
 type FileEntry = {
   path: string;
@@ -60,21 +60,23 @@ export async function materializePlanFiles(workspace: Workspace, plan: InfraPlan
   return written;
 }
 
-export async function listWorkspaceFiles(workspaceId: string): Promise<FileEntry[]> {
-  const root = workspaceRepoRoot(workspaceId);
+export async function listWorkspaceFiles(workspaceId: string, mode: WorkspaceMode = "infra"): Promise<FileEntry[]> {
+  const root = workspaceRepoRoot(workspaceId, mode);
   const entries: FileEntry[] = [];
-  await walk(root, root, entries);
+  const isIgnored = await workspaceIgnoreMatcher(root);
+  await walk(root, root, entries, isIgnored);
   return entries.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export async function readWorkspaceFile(workspaceId: string, path: string) {
-  if (isHiddenWorkspaceFile(path)) throw new Error("Hidden workspace file.");
-  const root = workspaceRepoRoot(workspaceId);
+export async function readWorkspaceFile(workspaceId: string, path: string, mode: WorkspaceMode = "infra") {
+  const root = workspaceRepoRoot(workspaceId, mode);
+  const isIgnored = await workspaceIgnoreMatcher(root);
+  if (isIgnored(path)) throw new Error("Hidden workspace file.");
   const target = safeJoin(root, path);
   return readFile(target, "utf8");
 }
 
-async function walk(root: string, dir: string, entries: FileEntry[]) {
+async function walk(root: string, dir: string, entries: FileEntry[], isIgnored: (path: string) => boolean) {
   let children: string[];
   try {
     children = await readdir(dir);
@@ -85,10 +87,10 @@ async function walk(root: string, dir: string, entries: FileEntry[]) {
   for (const child of children) {
     const full = join(dir, child);
     const relativePath = relative(root, full).split(sep).join("/");
-    if (isHiddenWorkspaceFile(relativePath)) continue;
+    if (isIgnored(relativePath)) continue;
     const info = await stat(full);
     if (info.isDirectory()) {
-      await walk(root, full, entries);
+      await walk(root, full, entries, isIgnored);
       continue;
     }
     entries.push({
@@ -96,6 +98,15 @@ async function walk(root: string, dir: string, entries: FileEntry[]) {
       size: info.size,
       updatedAt: info.mtime.toISOString()
     });
+  }
+}
+
+async function workspaceIgnoreMatcher(root: string): Promise<(path: string) => boolean> {
+  try {
+    const content = await readFile(join(root, ".gitignore"), "utf8");
+    return buildWorkspaceIgnoreMatcher(content);
+  } catch {
+    return isHiddenWorkspaceFile;
   }
 }
 

@@ -95,6 +95,7 @@ async function ensureSelfHostedAccount(admin: ReturnType<typeof configuredAdmin>
         id: SELF_HOST_WORKSPACE_ID,
         userId: user.id,
         companyName: admin.workspaceName,
+        mode: "infra",
         cloudPreference: admin.defaultCloud,
         createdAt
       };

@@ -7,7 +7,7 @@ import { decryptSecret } from "./secrets";
 import { formatKubernetesSandboxFailure, kubernetesSandboxJobName, runKubernetesSandbox } from "./sandbox-kubernetes";
 import { parseTerraformPlanOutput, stripTerraformPlanJson } from "./terraform-plan-parser";
 import { terraformVariableEnv } from "./terraform-variables";
-import type { SandboxRun } from "./types";
+import type { SandboxRun, WorkspaceMode } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +17,7 @@ type CommandError = NodeJS.ErrnoException & {
   code?: number;
 };
 
-type SandboxMode = "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+type SandboxMode = SandboxRun["mode"];
 type SandboxBackend = "podman" | "kubernetes";
 
 const FORWARDED_CLOUD_ENV = [
@@ -40,6 +40,7 @@ const FORWARDED_CLOUD_ENV = [
 
 export async function runSandbox(input: {
   workspaceId: string;
+  workspaceMode?: WorkspaceMode;
   planId?: string;
   rootPath?: string;
   mode: SandboxMode;
@@ -53,7 +54,8 @@ export async function runSandbox(input: {
   const createdAt = new Date().toISOString();
   const backend = sandboxBackend();
   const image = process.env.A2W_SANDBOX_IMAGE || "a2w-infra-sandbox:latest";
-  const repoRoot = sandboxHostPath(workspaceRepoRoot(input.workspaceId));
+  const workspaceMode = input.workspaceMode || "infra";
+  const repoRoot = sandboxHostPath(workspaceRepoRoot(input.workspaceId, workspaceMode));
   const sandboxScripts = sandboxHostPath(join(PROJECT_ROOT, "sandbox", "scripts"));
   const script = sandboxScript(input.mode);
   const network = input.allowNetwork ? "slirp4netns" : "none";
@@ -138,6 +140,7 @@ export async function runSandbox(input: {
       const result = await runKubernetesSandbox({
         runId: id,
         workspaceId: input.workspaceId,
+        workspaceMode,
         mode: input.mode,
         image,
         script,
@@ -209,6 +212,11 @@ function sandboxScript(mode: SandboxMode) {
   if (mode === "validate") return "/sandbox/validate.sh";
   if (mode === "terraform-apply") return "/sandbox/terraform-apply.sh";
   if (mode === "terraform-destroy") return "/sandbox/terraform-destroy.sh";
+  if (mode === "npm-install") return "/sandbox/npm-install.sh";
+  if (mode === "npm-audit") return "/sandbox/npm-audit.sh";
+  if (mode === "npm-lint") return "/sandbox/npm-lint.sh";
+  if (mode === "npm-test") return "/sandbox/npm-test.sh";
+  if (mode === "npm-build") return "/sandbox/npm-build.sh";
   return "/sandbox/terraform-plan.sh";
 }
 
@@ -224,6 +232,9 @@ function sandboxHostPath(path: string) {
 function sandboxTimeoutMs(mode: SandboxMode) {
   if (isCloudMutationMode(mode)) return 10 * 60_000;
   if (mode === "terraform-plan") return 4 * 60_000;
+  if (mode === "npm-install") return 6 * 60_000;
+  if (mode === "npm-audit") return 3 * 60_000;
+  if (mode === "npm-build" || mode === "npm-test") return 5 * 60_000;
   return 2 * 60_000;
 }
 

@@ -3,7 +3,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { Chat, CloudProvider, GitCommit, GitStashEntry, GitWorkspaceStatus, InfraPlan, Message, MessageAction, ProviderConnection, SandboxRun, TerraformRoot, TerraformVariableDefinition } from "@/lib/types";
+import type { Chat, CloudProvider, GitAuthMethod, GitCommit, GitProvider, GitRepositoryMode, GitStashEntry, GitWorkspaceStatus, InfraPlan, Message, MessageAction, ProviderConnection, SandboxRun, TerraformRoot, TerraformVariableDefinition, WorkspaceMode } from "@/lib/types";
 import { FilesBrowser } from "./FilesBrowser";
 import { Icon } from "./Icon";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -131,12 +131,53 @@ const slashCommands = [
     description: "Open the Terraform destroy confirmation.",
     kind: "terraform",
     action: "destroy"
+  },
+  {
+    command: "/npm-install",
+    insert: "/npm-install",
+    group: "NPM",
+    description: "Install dependencies for the active web workspace.",
+    kind: "npm",
+    action: "install"
+  },
+  {
+    command: "/npm-lint",
+    insert: "/npm-lint",
+    group: "NPM",
+    description: "Run the lint script for the active web workspace.",
+    kind: "npm",
+    action: "lint"
+  },
+  {
+    command: "/npm-audit",
+    insert: "/npm-audit",
+    group: "NPM",
+    description: "Audit dependencies for known vulnerabilities.",
+    kind: "npm",
+    action: "audit"
+  },
+  {
+    command: "/npm-test",
+    insert: "/npm-test",
+    group: "NPM",
+    description: "Run the test script for the active web workspace.",
+    kind: "npm",
+    action: "test"
+  },
+  {
+    command: "/npm-build",
+    insert: "/npm-build",
+    group: "NPM",
+    description: "Run the build script for the active web workspace.",
+    kind: "npm",
+    action: "build"
   }
 ] as const;
 type SlashCommand = (typeof slashCommands)[number];
 type TerraformSlashAction = Extract<SlashCommand, { kind: "terraform" }>["action"];
+type NpmSlashAction = Extract<SlashCommand, { kind: "npm" }>["action"];
 
-type SandboxMode = "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy";
+type SandboxMode = SandboxRun["mode"];
 type FileEntry = {
   path: string;
   size: number;
@@ -162,6 +203,7 @@ type CodexControlKey = "up" | "down" | "enter" | "escape";
 type ChatDisplayMode = "transcript" | "focus";
 const EDITOR_TREE_EXPANDED_STORAGE_KEY = "a2w.editor.fileTree.expanded.v1";
 const CHAT_DISPLAY_MODE_STORAGE_KEY = "a2w.chat.displayMode.v1";
+const WORKSPACE_RETURN_MODE_STORAGE_KEY = "a2w.workspace.returnMode";
 const WORKSPACE_TREE_POLL_INTERVAL_MS = 5000;
 const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
 const CHAT_DELETE_EVENT = "a2w:chat-delete";
@@ -186,6 +228,16 @@ function readChatDisplayMode(): ChatDisplayMode {
   }
 }
 
+function normalizeWorkspaceModeFromStorage(): WorkspaceMode | null {
+  if (typeof window === "undefined") return null;
+  const value = window.sessionStorage.getItem(WORKSPACE_RETURN_MODE_STORAGE_KEY);
+  return value === "infra" || value === "web" ? value : null;
+}
+
+function alternateWorkspaceMode(mode: WorkspaceMode): WorkspaceMode {
+  return mode === "web" ? "infra" : "web";
+}
+
 function isUntitledChatTitle(title: string) {
   return title.trim().toLowerCase() === "new chat";
 }
@@ -206,6 +258,7 @@ export function AgentChat({
   sandboxRuns,
   terraformRoots,
   gitStatus,
+  workspaceMode,
   provider,
   providerConnection,
   selectedTerraformRoot,
@@ -220,6 +273,7 @@ export function AgentChat({
   sandboxRuns: SandboxRun[];
   terraformRoots: TerraformRoot[];
   gitStatus: GitWorkspaceStatus;
+  workspaceMode: WorkspaceMode;
   provider: CloudProvider;
   providerConnection?: Omit<ProviderConnection, "secrets">;
   selectedTerraformRoot?: string;
@@ -251,6 +305,7 @@ export function AgentChat({
   const [mergeOpen, setMergeOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const [profileSetupOpen, setProfileSetupOpen] = useState(false);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
   const [savingVariables, setSavingVariables] = useState(false);
   const [credentialsOpen, setCredentialsOpen] = useState(false);
@@ -271,6 +326,7 @@ export function AgentChat({
   const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("focus");
   const [engagedChatIds, setEngagedChatIds] = useState<Set<string>>(() => new Set());
   const [codexCancelFlash, setCodexCancelFlash] = useState(false);
+  const [sandboxFailureFlash, setSandboxFailureFlash] = useState(false);
   const [displayModeReady, setDisplayModeReady] = useState(false);
   const [allowNetwork, setAllowNetwork] = useState(false);
   const [mode, setMode] = useState<SandboxMode>("terraform-fmt");
@@ -281,15 +337,18 @@ export function AgentChat({
   const focusSummaryPostKeyRef = useRef("");
   const submitAbortRef = useRef<AbortController | null>(null);
   const cancelFlashTimeoutRef = useRef<number | null>(null);
+  const sandboxFailureFlashTimeoutRef = useRef<number | null>(null);
+  const sandboxFailureSeenRunIdRef = useRef<string | null | undefined>(undefined);
   const newChatMode = activeChatId === "new";
   const editorMode = !newChatMode;
+  const profileNeedsSetup = !git.initialized;
   const codexBusy = editorMode && Boolean(codexPane?.running && !codexPane.ready && !codexPane.viewingTranscript && !codexPane.stagedInput);
   const codexStagedInput = codexBusy ? codexPane?.stagedInput : "";
   const slashQuery = slashCommandQuery(value);
   const slashMatches = useMemo(() => {
     if (slashQuery === null) return [];
-    return slashCommands.filter((item) => item.command.startsWith(slashQuery));
-  }, [slashQuery]);
+    return slashCommands.filter((item) => item.command.startsWith(slashQuery) && slashCommandAllowedForMode(item, workspaceMode));
+  }, [slashQuery, workspaceMode]);
   const slashOpen = slashMatches.length > 0;
   const slashMode = slashQuery !== null;
   const selectedSlashCommand = slashMatches[slashIndex] || null;
@@ -323,6 +382,7 @@ export function AgentChat({
     return sandboxRuns.filter((run) => run.planId === selectedPlan.id);
   }, [sandboxRuns, selectedPlan]);
   const selectedRun = selectedRuns?.at(-1) || null;
+  const latestFailedSandboxRun = useMemo(() => sandboxRuns.filter((run) => run.status === "failed").at(-1) || null, [sandboxRuns]);
   const missingRequiredVariables = useMemo(() => {
     return (selectedRoot?.variables || []).filter((variable) => variable.required && !variable.value);
   }, [selectedRoot?.variables]);
@@ -346,11 +406,16 @@ export function AgentChat({
     git,
     root: selectedRoot,
     selectedRun,
+    sandboxRuns,
     chatSummary: activeChat?.focusSummary
-  }), [activeChat?.focusSummary, codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
-  const visualFocusStatus = codexCancelFlash ? "cancelled" : focusState.status;
-  const visualFocusLabel = codexCancelFlash ? "Stopped" : focusState.statusLabel;
-  const visualFocusDetail = codexCancelFlash ? "Codex was interrupted." : focusState.detail;
+  }), [activeChat?.focusSummary, codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, sandboxRuns, selectedRoot, selectedRun]);
+  const visualFocusStatus = codexCancelFlash ? "cancelled" : sandboxFailureFlash ? "error" : focusState.status;
+  const visualFocusLabel = codexCancelFlash ? "Stopped" : sandboxFailureFlash ? "Action failed" : focusState.statusLabel;
+  const visualFocusDetail = codexCancelFlash
+    ? "Codex was interrupted."
+    : sandboxFailureFlash
+      ? latestFailedSandboxRun ? `${modeLabel(latestFailedSandboxRun.mode)} needs review.` : "The latest sandbox action failed."
+      : focusState.detail;
 
   useEffect(() => {
     setChatList(chats);
@@ -359,8 +424,25 @@ export function AgentChat({
   useEffect(() => {
     return () => {
       if (cancelFlashTimeoutRef.current) window.clearTimeout(cancelFlashTimeoutRef.current);
+      if (sandboxFailureFlashTimeoutRef.current) window.clearTimeout(sandboxFailureFlashTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (sandboxFailureSeenRunIdRef.current === undefined) {
+      sandboxFailureSeenRunIdRef.current = latestFailedSandboxRun?.id || null;
+      return;
+    }
+    if (!latestFailedSandboxRun || sandboxFailureSeenRunIdRef.current === latestFailedSandboxRun.id) return;
+
+    sandboxFailureSeenRunIdRef.current = latestFailedSandboxRun.id;
+    if (sandboxFailureFlashTimeoutRef.current) window.clearTimeout(sandboxFailureFlashTimeoutRef.current);
+    setSandboxFailureFlash(true);
+    sandboxFailureFlashTimeoutRef.current = window.setTimeout(() => {
+      setSandboxFailureFlash(false);
+      sandboxFailureFlashTimeoutRef.current = null;
+    }, 1800);
+  }, [latestFailedSandboxRun?.id]);
 
   useEffect(() => {
     if (activeChatId === "new" || !codexPane?.ready || !focusState.responseSummary) return;
@@ -384,6 +466,10 @@ export function AgentChat({
         focusSummaryPostKeyRef.current = "";
       });
   }, [activeChat?.focusSummary, activeChatId, codexPane?.ready, focusState.responseSummary]);
+
+  useEffect(() => {
+    if (profileNeedsSetup) setProfileSetupOpen(true);
+  }, [profileNeedsSetup, workspaceMode]);
 
   useEffect(() => {
     setDisplayMode(readChatDisplayMode());
@@ -566,6 +652,10 @@ export function AgentChat({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (slashMode) return;
+    if (profileNeedsSetup) {
+      setProfileSetupOpen(true);
+      return;
+    }
     const message = value.trim();
     if (!message) return;
     const startingNewChat = activeChatId === "new";
@@ -581,7 +671,7 @@ export function AgentChat({
         const chatResponse = await fetch("/api/chats", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ mode: workspaceMode }),
           signal: submitController.signal
         });
         const chatData = await chatResponse.json();
@@ -602,7 +692,7 @@ export function AgentChat({
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, provider, chatId: targetChatId === "new" ? undefined : targetChatId, rootPath: selectedRoot?.path }),
+        body: JSON.stringify({ message, mode: workspaceMode, provider, chatId: targetChatId === "new" ? undefined : targetChatId, rootPath: selectedRoot?.path }),
         signal: submitController.signal
       });
       const data = await response.json();
@@ -645,6 +735,10 @@ export function AgentChat({
       executeTerraformSlashCommand(command.action);
       return;
     }
+    if (command.kind === "npm") {
+      executeNpmSlashCommand(command.action);
+      return;
+    }
     if (codexBusy) return;
     setPendingStatus(command.command === "/model" ? "Opening Codex model picker..." : `Running ${command.command} in Codex...`);
     setLoading(true);
@@ -652,7 +746,7 @@ export function AgentChat({
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: command.command, provider, chatId: activeChatId === "new" ? undefined : activeChatId, rootPath: selectedRoot?.path })
+        body: JSON.stringify({ message: command.command, mode: workspaceMode, provider, chatId: activeChatId === "new" ? undefined : activeChatId, rootPath: selectedRoot?.path })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not execute Codex command.");
@@ -725,6 +819,12 @@ export function AgentChat({
     }
   }
 
+  function executeNpmSlashCommand(action: NpmSlashAction) {
+    setValue("");
+    const nextMode = npmActionMode(action);
+    void runWorkspaceSandbox(nextMode, action === "install" || action === "audit");
+  }
+
   async function sendCodexControlKey(key: CodexControlKey, options: { requirePicker?: boolean; flashCancel?: boolean } = {}) {
     if (activeChatId === "new" || (options.requirePicker && !codexPicker)) return;
     const requestId = codexPickerKeyRequest.current + 1;
@@ -775,12 +875,12 @@ export function AgentChat({
   }
 
   async function runSandbox(nextPlan = sandboxPlan, nextMode = mode, nextAllowNetwork = allowNetwork, nextConfirm = applyConfirm) {
-    if (!nextPlan) return;
+    if (isTerraformSandboxMode(nextMode) && !nextPlan) return;
     const plan = nextPlan;
     const currentMode = nextMode;
     const label = modeLabel(currentMode, true);
     setSandboxPlan(null);
-    setPendingStatus(`${label} for ${plan.title}...`);
+    setPendingStatus(`${label} for ${plan?.title || "workspace"}...`);
     setLoading(true);
 
     try {
@@ -788,7 +888,7 @@ export function AgentChat({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          planId: plan.id,
+          planId: plan?.id,
           rootPath: selectedRoot?.path,
           mode: currentMode,
           allowNetwork: nextAllowNetwork,
@@ -799,7 +899,7 @@ export function AgentChat({
       const data = await response.json();
       if (!response.ok && !data.run) throw new Error(data.error || "Sandbox run failed.");
       setApplyConfirm("");
-      setSelectedPlanId(plan.id);
+      if (plan?.id) setSelectedPlanId(plan.id);
       flash(data.run?.status === "succeeded" ? `${label} succeeded` : `${label} failed`);
       void refreshEditorFiles();
       void refreshGit();
@@ -865,6 +965,13 @@ export function AgentChat({
       return;
     }
     void runSandbox(plan, nextMode, nextAllowNetwork, "");
+  }
+
+  function runWorkspaceSandbox(nextMode: SandboxMode, nextAllowNetwork = false) {
+    setMode(nextMode);
+    setAllowNetwork(nextAllowNetwork);
+    setApplyConfirm("");
+    void runSandbox(null, nextMode, nextAllowNetwork, "");
   }
 
   function openVariables() {
@@ -1016,6 +1123,119 @@ export function AgentChat({
     }
   }
 
+  async function completeProfileSetup(input: {
+    cloudProvider?: CloudProvider;
+    cloudDetails?: Record<string, string>;
+    gitProvider: GitProvider;
+    repositoryMode: GitRepositoryMode;
+    repositoryUrl: string;
+    repositoryName: string;
+    repositoryOwner: string;
+    repositoryBranch: string;
+    gitAuthMethod: GitAuthMethod;
+    gitUsername: string;
+    gitToken: string;
+    gitSshPrivateKey: string;
+    nextjsAppName: string;
+    nextjsHeroText: string;
+  }) {
+    setLoading(true);
+    setPendingStatus(workspaceMode === "infra" ? "Setting up infra cloud credentials..." : "Setting up web repository...");
+    try {
+      if (workspaceMode === "infra" && input.cloudProvider && input.cloudDetails) {
+        const providerResponse = await fetch("/api/provider-connections", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider: input.cloudProvider,
+            ...input.cloudDetails
+          })
+        });
+        const providerData = await providerResponse.json();
+        if (!providerResponse.ok) throw new Error(providerData.error || providerData.errors?.join(" ") || "Could not configure cloud credentials.");
+        if (providerData.connection) setActiveProviderConnection(providerData.connection);
+      }
+
+      setPendingStatus(`Setting up ${workspaceMode === "web" ? "web" : "infra"} repository...`);
+      const gitResponse = await fetch("/api/onboarding/git/confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: workspaceMode,
+          gitProvider: input.gitProvider,
+          repositoryMode: input.repositoryMode,
+          repositoryUrl: input.repositoryUrl,
+          repositoryName: input.repositoryName,
+          repositoryOwner: input.repositoryOwner,
+          repositoryBranch: input.repositoryBranch,
+          gitAuthMethod: input.gitAuthMethod,
+          gitUsername: input.gitUsername,
+          gitToken: input.gitToken,
+          gitSshPrivateKey: input.gitSshPrivateKey,
+          nextjsAppName: input.nextjsAppName,
+          nextjsHeroText: input.nextjsHeroText
+        })
+      });
+      const gitData = await gitResponse.json();
+      if (!gitResponse.ok) throw new Error(gitData.error || "Could not configure repository.");
+      if (gitData.git) setGit(gitData.git);
+
+      const chatResponse = await fetch("/api/chats", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: workspaceMode })
+      });
+      const chatData = await chatResponse.json();
+      if (!chatResponse.ok || !chatData.chat?.id) throw new Error(chatData.error || "Could not create workspace chat.");
+      setChatList((current) => current.some((item) => item.id === chatData.chat.id)
+        ? current.map((item) => item.id === chatData.chat.id ? chatData.chat : item)
+        : [chatData.chat, ...current]);
+      window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: chatData.chat }));
+      setActiveChatId(chatData.chat.id);
+      setProfileSetupOpen(false);
+      window.sessionStorage.removeItem(WORKSPACE_RETURN_MODE_STORAGE_KEY);
+      router.replace(`/dashboard/agent?chat=${encodeURIComponent(chatData.chat.id)}`);
+      void fetch("/api/codex/tmux", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chatId: chatData.chat.id, action: "start" })
+      }).catch(() => undefined);
+      router.refresh();
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error), 3500);
+      throw error;
+    } finally {
+      setLoading(false);
+      setPendingStatus(null);
+    }
+  }
+
+  async function cancelProfileSetup() {
+    const returnMode = normalizeWorkspaceModeFromStorage() || alternateWorkspaceMode(workspaceMode);
+    setProfileSetupOpen(false);
+    if (profileNeedsSetup && returnMode !== workspaceMode) {
+      setLoading(true);
+      try {
+        const response = await fetch("/api/workspace", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: returnMode })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not return to previous workspace.");
+        window.sessionStorage.removeItem(WORKSPACE_RETURN_MODE_STORAGE_KEY);
+        router.replace("/dashboard/agent");
+        router.refresh();
+      } catch (error) {
+        flash(error instanceof Error ? error.message : String(error));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+    window.sessionStorage.removeItem(WORKSPACE_RETURN_MODE_STORAGE_KEY);
+  }
+
   function handleMessageAction(action: MessageAction) {
     const actionRoot = action.rootPath ? roots.find((item) => item.path === action.rootPath) : selectedRoot;
     if (actionRoot) {
@@ -1072,7 +1292,7 @@ export function AgentChat({
                 ) : (
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">New chat</p>
-                    <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W</h1>
+                    <h1 className="truncate text-xl font-semibold tracking-[-0.02em]">Message A2W-Code</h1>
                   </div>
                 )}
               </div>
@@ -1088,13 +1308,14 @@ export function AgentChat({
             <div className="relative min-h-0 flex-1 overflow-hidden">
               <CodexFocusSphere
                 status="idle"
-                statusLabel='"What do you want me to do?"'
-                detail=""
-                rootName="workspace"
+                statusLabel={profileNeedsSetup ? `"Set up your ${workspaceMode === "web" ? "web" : "infra"} repository"` : '"What do you want me to do?"'}
+                detail={profileNeedsSetup ? "Connect or reuse a Git repository before starting chats in this workspace mode." : ""}
+                rootName={workspaceMode === "web" ? "web workspace" : "infra workspace"}
                 changedFiles={0}
                 additions={0}
                 deletions={0}
                 actions={[]}
+                sandboxActions={[]}
                 presentation="new-chat"
               />
             </div>
@@ -1109,11 +1330,13 @@ export function AgentChat({
                 additions={focusState.additions}
                 deletions={focusState.deletions}
                 actions={focusState.actions}
+                sandboxActions={focusState.sandboxActions}
                 responseSummary={focusState.responseSummary}
                 onShowTranscript={() => setDisplayMode("transcript")}
               />
               <div className="absolute left-2 top-2 z-40 sm:left-4 sm:top-4">
-                <TerraformActionBar
+                <WorkspaceActionBar
+                  workspaceMode={workspaceMode}
                   plan={selectedPlan}
                   root={selectedRoot}
                   loading={loading}
@@ -1127,7 +1350,8 @@ export function AgentChat({
                   onCommitPush={openCommitPush}
                   onMerge={openMerge}
                   onApprove={() => selectedPlan && void approve(selectedPlan)}
-                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  onTerraformSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  onWorkspaceSandbox={runWorkspaceSandbox}
                   missingVariables={missingRequiredVariables.length}
                   canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
                   placement="focus"
@@ -1155,7 +1379,8 @@ export function AgentChat({
           >
             {!focusModeActive && editorMode && !freshChatMode ? (
               <div className="mx-auto max-w-3xl">
-                <TerraformActionBar
+                <WorkspaceActionBar
+                  workspaceMode={workspaceMode}
                   plan={selectedPlan}
                   root={selectedRoot}
                   loading={loading}
@@ -1169,7 +1394,8 @@ export function AgentChat({
                   onCommitPush={openCommitPush}
                   onMerge={openMerge}
                   onApprove={() => selectedPlan && void approve(selectedPlan)}
-                  onSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  onTerraformSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+                  onWorkspaceSandbox={runWorkspaceSandbox}
                   missingVariables={missingRequiredVariables.length}
                   canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
                 />
@@ -1228,10 +1454,11 @@ export function AgentChat({
                     }
                   }}
                   className="max-h-40 min-h-12 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-6 text-black outline-none"
-                  placeholder={codexStagedInput ? "Submitting queued Codex input..." : codexBusy ? "Codex is working..." : "Message A2W..."}
+                  placeholder={profileNeedsSetup ? "Set up this workspace mode before chatting..." : codexStagedInput ? "Submitting queued Codex input..." : codexBusy ? "Codex is working..." : "Message A2W-Code..."}
+                  disabled={loading || codexBusy || profileNeedsSetup}
                 />
                 <button
-                  disabled={loading || codexBusy || slashMode || !value.trim()}
+                  disabled={loading || codexBusy || slashMode || profileNeedsSetup || !value.trim()}
                   className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300"
                   type="submit"
                   aria-label={slashMode ? "Slash commands run from keyboard" : "Send message"}
@@ -1295,6 +1522,18 @@ export function AgentChat({
           onChange={(name, value) => setVariableValues((current) => ({ ...current, [name]: value }))}
           onClose={() => setVariablesOpen(false)}
           onSave={saveVariables}
+        />
+      ) : null}
+
+      {profileSetupOpen ? (
+        <WorkspaceProfileSetupModal
+          workspaceMode={workspaceMode}
+          provider={provider}
+          providerConnection={activeProviderConnection}
+          git={git}
+          loading={loading}
+          onClose={cancelProfileSetup}
+          onComplete={completeProfileSetup}
         />
       ) : null}
 
@@ -1973,7 +2212,8 @@ function persistEditorExpanded(paths: Set<string>) {
   }
 }
 
-function TerraformActionBar({
+function WorkspaceActionBar({
+  workspaceMode,
   plan,
   root,
   loading,
@@ -1987,11 +2227,13 @@ function TerraformActionBar({
   onCommitPush,
   onMerge,
   onApprove,
-  onSandbox,
+  onTerraformSandbox,
+  onWorkspaceSandbox,
   missingVariables,
   canMergeBranch,
   placement = "input"
 }: {
+  workspaceMode: WorkspaceMode;
   plan: InfraPlan | null;
   root: TerraformRoot | null;
   loading: boolean;
@@ -2005,15 +2247,18 @@ function TerraformActionBar({
   onCommitPush: () => void;
   onMerge: () => void;
   onApprove: () => void;
-  onSandbox: (mode: SandboxMode) => void;
+  onTerraformSandbox: (mode: SandboxMode) => void;
+  onWorkspaceSandbox: (mode: SandboxMode, allowNetwork?: boolean) => void;
   missingVariables: number;
   canMergeBranch: boolean;
   placement?: "input" | "focus";
 }) {
-  const [openGroup, setOpenGroup] = useState<"terraform" | "git" | null>(null);
+  const actionGroup = workspaceMode === "web" ? "npm" : "terraform";
+  const [openGroup, setOpenGroup] = useState<"terraform" | "npm" | "git" | null>(null);
   const approved = Boolean(plan?.status.includes("approved"));
   const canMutate = approved && !applyDisabled && applyRuntimeEnabled;
   const disabled = loading || !plan;
+  const npmDisabled = loading;
   const focusPlacement = placement === "focus";
 
   function run(action: () => void) {
@@ -2028,7 +2273,7 @@ function TerraformActionBar({
           className={`absolute z-20 w-64 rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10 ${
             focusPlacement
               ? "left-full top-0 ml-2"
-              : `bottom-full mb-2 ${openGroup === "terraform" ? "left-0" : "right-0"}`
+              : `bottom-full mb-2 ${openGroup === actionGroup ? "left-0" : "right-0"}`
           }`}
         >
           {openGroup === "terraform" ? (
@@ -2036,16 +2281,26 @@ function TerraformActionBar({
               <ActionMenuButton icon="fa-code-branch" label="View plan" disabled={disabled} onClick={() => run(onViewPlan)} />
               <ActionMenuButton icon="fa-clock-rotate-left" label="Run history" disabled={loading || !root} onClick={() => run(onRuns)} />
               <ActionMenuButton icon="fa-keyboard" label={missingVariables ? `Inputs (${missingVariables})` : "Inputs"} disabled={loading || !root} onClick={() => run(onVariables)} />
-              <ActionMenuButton icon="fa-code" label="Terraform fmt" disabled={disabled} onClick={() => run(() => onSandbox("terraform-fmt"))} />
-              <ActionMenuButton icon="fa-terminal" label="Terraform plan" disabled={disabled} onClick={() => run(() => onSandbox("terraform-plan"))} />
+              <ActionMenuButton icon="fa-code" label="Terraform fmt" disabled={disabled} onClick={() => run(() => onTerraformSandbox("terraform-fmt"))} />
+              <ActionMenuButton icon="fa-terminal" label="Terraform plan" disabled={disabled} onClick={() => run(() => onTerraformSandbox("terraform-plan"))} />
               {approved ? (
                 <>
-                  <ActionMenuButton icon="fa-rocket" label="Apply" danger disabled={loading || !canMutate} onClick={() => run(() => onSandbox("terraform-apply"))} />
-                  <ActionMenuButton icon="fa-trash" label="Destroy" subtleDanger disabled={loading || !canMutate} onClick={() => run(() => onSandbox("terraform-destroy"))} />
+                  <ActionMenuButton icon="fa-rocket" label="Apply" danger disabled={loading || !canMutate} onClick={() => run(() => onTerraformSandbox("terraform-apply"))} />
+                  <ActionMenuButton icon="fa-trash" label="Destroy" subtleDanger disabled={loading || !canMutate} onClick={() => run(() => onTerraformSandbox("terraform-destroy"))} />
                 </>
               ) : (
                 <ActionMenuButton icon="fa-check" label="Approve" primary disabled={disabled || Boolean(plan?.blocked)} onClick={() => run(onApprove)} />
               )}
+            </div>
+          ) : null}
+
+          {openGroup === "npm" ? (
+            <div className="grid gap-1">
+              <ActionMenuButton icon="fa-download" label="NPM install" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-install", true))} />
+              <ActionMenuButton icon="fa-shield-halved" label="NPM audit" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-audit", true))} />
+              <ActionMenuButton icon="fa-list-check" label="NPM lint" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-lint"))} />
+              <ActionMenuButton icon="fa-vial" label="NPM test" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-test"))} />
+              <ActionMenuButton icon="fa-box" label="NPM build" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-build"))} />
             </div>
           ) : null}
 
@@ -2061,7 +2316,11 @@ function TerraformActionBar({
       ) : null}
 
       <div className={`flex items-center gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
-        <GroupTrigger icon={<TerraformMark />} label="Terraform" active={openGroup === "terraform"} onClick={() => setOpenGroup(openGroup === "terraform" ? null : "terraform")} />
+        {workspaceMode === "web" ? (
+          <GroupTrigger icon={<Icon name="fa-brands fa-npm" className="text-[15px] text-[#cb3837]" />} label="NPM" active={openGroup === "npm"} onClick={() => setOpenGroup(openGroup === "npm" ? null : "npm")} />
+        ) : (
+          <GroupTrigger icon={<TerraformMark />} label="Terraform" active={openGroup === "terraform"} onClick={() => setOpenGroup(openGroup === "terraform" ? null : "terraform")} />
+        )}
       </div>
       <div className={`flex items-center justify-end gap-1.5 rounded-full border p-1 ${focusPlacement ? "border-gray-200 bg-white/80 shadow-sm shadow-black/[0.03] backdrop-blur" : "border-gray-200 bg-[#fbfbf9]"}`}>
         <GroupTrigger icon={<Icon name="fa-brands fa-git-alt" className="text-[13px] text-[#F05032]" />} label="Git" active={openGroup === "git"} onClick={() => setOpenGroup(openGroup === "git" ? null : "git")} />
@@ -2245,6 +2504,8 @@ function SlashCommandPalette({
                     <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-gray-100" title="Terraform">
                       <TerraformMark />
                     </span>
+                  ) : command.group === "NPM" ? (
+                    <Icon name="fa-brands fa-npm" className="text-[#cb3837]" />
                   ) : null}
                 </span>
               </button>
@@ -2265,6 +2526,12 @@ function slashCommandQuery(input: string) {
   if (!value.startsWith("/") || value.includes("\n")) return null;
   if (/\s$/.test(value)) return null;
   return value;
+}
+
+function slashCommandAllowedForMode(command: SlashCommand, mode: WorkspaceMode) {
+  if (command.kind === "terraform") return mode === "infra";
+  if (command.kind === "npm") return mode === "web";
+  return true;
 }
 
 function CodexTmuxHistory({
@@ -2526,6 +2793,7 @@ function buildCodexFocusState({
   git,
   root,
   selectedRun,
+  sandboxRuns,
   chatSummary
 }: {
   pane: CodexTmuxPane | null;
@@ -2536,6 +2804,7 @@ function buildCodexFocusState({
   git: GitWorkspaceStatus;
   root: TerraformRoot | null;
   selectedRun?: SandboxRun | null;
+  sandboxRuns: SandboxRun[];
   chatSummary?: string;
 }): {
   status: CodexFocusStatus;
@@ -2546,6 +2815,7 @@ function buildCodexFocusState({
   additions: number;
   deletions: number;
   actions: CodexFocusAction[];
+  sandboxActions: CodexFocusAction[];
   responseSummary?: string;
 } {
   const latestTurn = turns.at(-1);
@@ -2555,10 +2825,9 @@ function buildCodexFocusState({
   const activeAction = recentActions.at(-1);
   const running = Boolean(loading || pendingStatus || (pane?.running && !pane.ready && !pane.viewingTranscript));
   const rootName = root?.name || root?.path.split("/").filter(Boolean).at(-1) || "workspace";
-  const runFailed = selectedRun?.status === "failed";
   let status: CodexFocusStatus = "idle";
 
-  if (runFailed || /failed|error/i.test(pendingStatus || "")) status = "error";
+  if (/failed|error/i.test(pendingStatus || "")) status = "error";
   else if (missingVariables > 0) status = "blocked";
   else if (running && activeAction && activeAction.kind !== "thinking") status = "tool_running";
   else if (running) status = "thinking";
@@ -2569,6 +2838,12 @@ function buildCodexFocusState({
   const detail = focusStatusDetail(status, git.files.length, rootName, activeAction, selectedRun);
   const savedSummary = chatSummary ? cleanFocusSummary(chatSummary) : "";
   const responseSummary = running ? "" : latestTurn?.focusSummary || savedSummary || (pane?.ready && latestTurn?.response ? summarizeFocusResponse(latestTurn.response) : "");
+  const actionFeed = recentActions.map((action) => ({
+    kind: action.kind,
+    label: action.label,
+    detail: action.detail
+  }));
+  const sandboxActions = buildSandboxFocusActions({ sandboxRuns, pendingStatus, rootName });
 
   return {
     status,
@@ -2578,13 +2853,56 @@ function buildCodexFocusState({
     changedFiles: git.files.length,
     additions: diffStats.additions,
     deletions: diffStats.deletions,
-    actions: recentActions.map((action) => ({
-      kind: action.kind,
-      label: action.label,
-      detail: action.detail
-    })),
+    actions: actionFeed.slice(-18),
+    sandboxActions,
     responseSummary
   };
+}
+
+function buildSandboxFocusActions({
+  sandboxRuns,
+  pendingStatus,
+  rootName
+}: {
+  sandboxRuns: SandboxRun[];
+  pendingStatus: string | null;
+  rootName: string;
+}): CodexFocusAction[] {
+  const actions: CodexFocusAction[] = sandboxRuns.slice(-10).map((run) => {
+    const suffix = run.status === "succeeded"
+      ? "succeeded"
+      : run.status === "failed"
+        ? "failed"
+        : run.status === "running"
+          ? "running"
+          : run.status;
+    const root = run.rootPath?.split("/").filter(Boolean).at(-1);
+    const detail = [
+      root || undefined,
+      run.exitCode !== null && run.exitCode !== undefined ? `exit ${run.exitCode}` : undefined
+    ].filter(Boolean).join(" · ");
+
+    return {
+      kind: "command" as const,
+      label: `${modeLabel(run.mode)} ${suffix}`,
+      detail,
+      output: run.output
+    };
+  });
+
+  if (pendingStatus && isSandboxPendingStatus(pendingStatus)) {
+    actions.push({
+      kind: "command",
+      label: pendingStatus.replace(/\.\.\.$/, ""),
+      detail: rootName
+    });
+  }
+
+  return actions.slice(-1);
+}
+
+function isSandboxPendingStatus(status: string) {
+  return /^(Formatting Terraform|Running Terraform plan|Applying Terraform|Destroying Terraform resources|Installing dependencies|Auditing dependencies|Running lint|Running tests|Building web app|Running validation)\b/.test(status);
 }
 
 function focusStatusLabel(status: CodexFocusStatus, pendingStatus: string | null, activeAction: CodexPaneAction | undefined, missingVariables: number) {
@@ -4261,6 +4579,689 @@ function VariablesModal({
   );
 }
 
+function WorkspaceProfileSetupModal({
+  workspaceMode,
+  provider,
+  providerConnection,
+  git,
+  loading,
+  onClose,
+  onComplete
+}: {
+  workspaceMode: WorkspaceMode;
+  provider: CloudProvider;
+  providerConnection?: Omit<ProviderConnection, "secrets">;
+  git: GitWorkspaceStatus;
+  loading: boolean;
+  onClose: () => void;
+  onComplete: (input: {
+    cloudProvider?: CloudProvider;
+    cloudDetails?: Record<string, string>;
+    gitProvider: GitProvider;
+    repositoryMode: GitRepositoryMode;
+    repositoryUrl: string;
+    repositoryName: string;
+    repositoryOwner: string;
+    repositoryBranch: string;
+    gitAuthMethod: GitAuthMethod;
+    gitUsername: string;
+    gitToken: string;
+    gitSshPrivateKey: string;
+    nextjsAppName: string;
+    nextjsHeroText: string;
+  }) => Promise<void>;
+}) {
+  const setupSteps = workspaceMode === "infra" ? ["Cloud", "Source", "Repository", "Access", "Confirm"] : ["Source", "Repository", "Access", "Confirm"];
+  const [step, setStep] = useState(0);
+  const [cloudProvider, setCloudProvider] = useState<CloudProvider>(provider === "aws" ? "aws" : "azure");
+  const [cloudDetails, setCloudDetails] = useState<Record<string, string>>(() => profileCredentialDefaults(providerConnection?.provider || provider, providerConnection));
+  const [credentialTesting, setCredentialTesting] = useState(false);
+  const [credentialTest, setCredentialTest] = useState<{ status: string; label: string; detail: string } | null>(providerConnection ? {
+    status: "configured",
+    label: `${cloudProviderLabel(providerConnection.provider)} credentials saved`,
+    detail: "Saved credentials are available for Terraform sandbox runs."
+  } : null);
+  const [gitProvider, setGitProvider] = useState<GitProvider>("github");
+  const [repositoryMode, setRepositoryMode] = useState<GitRepositoryMode>(workspaceMode === "web" ? "nextjs" : "dstack");
+  const [repositoryUrl, setRepositoryUrl] = useState(git.remoteUrl || "");
+  const [repositoryName, setRepositoryName] = useState(workspaceMode === "web" ? "a2w-web-app" : "a2w-infrastructure");
+  const [repositoryOwner, setRepositoryOwner] = useState("");
+  const [repositoryBranch, setRepositoryBranch] = useState(git.branch && git.branch !== "detached" ? git.branch : "main");
+  const [nextjsAppName, setNextjsAppName] = useState("a2w-web-app");
+  const [nextjsHeroText, setNextjsHeroText] = useState("Build from here.");
+  const [gitAuthMethod, setGitAuthMethod] = useState<GitAuthMethod>("none");
+  const [gitUsername, setGitUsername] = useState("");
+  const [gitToken, setGitToken] = useState("");
+  const [gitSshPrivateKey, setGitSshPrivateKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const label = workspaceMode === "web" ? "Web" : "Infra";
+  const accent = workspaceMode === "web" ? "text-[#087ea4]" : "text-[#5c4ee5]";
+  const icon = workspaceMode === "web" ? "fa-brands fa-react" : "fa-diagram-project";
+  const cloudFields = credentialFields(cloudProvider);
+  const sourceStep = workspaceMode === "infra" ? 1 : 0;
+  const repositoryStep = sourceStep + 1;
+  const accessStep = sourceStep + 2;
+  const confirmStep = sourceStep + 3;
+
+  function setCloudProviderAndReset(nextProvider: CloudProvider) {
+    setCloudProvider(nextProvider);
+    setCloudDetails(profileCredentialDefaults(nextProvider));
+    setCredentialTest(null);
+    setError(null);
+  }
+
+  function setCloudDetail(name: string, value: string) {
+    setCloudDetails((current) => ({ ...current, [name]: value }));
+    setCredentialTest(null);
+    setError(null);
+  }
+
+  function validateCloud() {
+    if (workspaceMode !== "infra") return true;
+    const missing = cloudFields.filter((field) => !String(cloudDetails[field.name] || "").trim() && !(field.type === "password" && providerConnection?.provider === cloudProvider)).map((field) => field.label);
+    if (missing.length) {
+      setError(`Enter ${missing.join(", ")}.`);
+      return false;
+    }
+    if (cloudProvider === "azure" && credentialTest?.status !== "connected" && providerConnection?.provider !== cloudProvider) {
+      setError("Test Azure credentials before continuing.");
+      return false;
+    }
+    if (cloudProvider === "aws" && !credentialTest) {
+      setError("Check AWS credential shape before continuing.");
+      return false;
+    }
+    return true;
+  }
+
+  async function testCloudCredentials() {
+    setCredentialTesting(true);
+    setCredentialTest(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/provider-connections/test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: cloudProvider,
+          ...cloudDetails
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.errors?.join(" ") || "Credential check failed.");
+      setCredentialTest(data.result);
+    } catch (nextError) {
+      setCredentialTest({
+        status: "failed",
+        label: "Credential check failed",
+        detail: nextError instanceof Error ? nextError.message : String(nextError)
+      });
+    } finally {
+      setCredentialTesting(false);
+    }
+  }
+
+  function validate(final = false) {
+    setError(null);
+    if (repositoryMode === "existing" && !repositoryUrl.trim()) {
+      setError("Enter the remote repository URL.");
+      return;
+    }
+    if ((repositoryMode === "dstack" || repositoryMode === "nextjs") && !repositoryName.trim()) {
+      setError("Enter the repository name.");
+      return;
+    }
+    if (repositoryMode === "nextjs" && !nextjsAppName.trim()) {
+      setError("Enter the Next.js package name.");
+      return;
+    }
+    if (final && (repositoryMode === "dstack" || repositoryMode === "nextjs") && !repositoryUrl.trim() && !(gitProvider === "github" && gitAuthMethod === "token")) {
+      setError("Enter an empty remote repository URL you already created, or use a GitHub HTTPS token so A2W can create the repository.");
+      return;
+    }
+    if (gitAuthMethod === "token" && !gitToken.trim()) {
+      setError("Enter an HTTPS token or choose no auth.");
+      return;
+    }
+    if (gitAuthMethod === "ssh" && !gitSshPrivateKey.trim()) {
+      setError("Paste the SSH private key or choose no auth.");
+      return;
+    }
+    return true;
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (workspaceMode === "infra" && step === 0 && !validateCloud()) return;
+    if (step < setupSteps.length - 1) {
+      if ((workspaceMode === "infra" ? step > 1 : step > 0) && !validate(false)) return;
+      setStep((current) => Math.min(current + 1, setupSteps.length - 1));
+      return;
+    }
+    if (!validate(true)) return;
+    try {
+      await onComplete({
+        ...(workspaceMode === "infra" ? { cloudProvider, cloudDetails } : {}),
+        gitProvider,
+        repositoryMode,
+        repositoryUrl,
+        repositoryName,
+        repositoryOwner,
+        repositoryBranch,
+        gitAuthMethod,
+        gitUsername,
+        gitToken,
+        gitSshPrivateKey,
+        nextjsAppName,
+        nextjsHeroText
+      });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError));
+    }
+  }
+
+  return (
+    <Modal
+      title={`Set up ${label} repository`}
+      description={`Connect the Git repository that ${label} chats should work against. Current Git values are prefilled when available.`}
+      icon={workspaceMode === "web" ? "fa-window-maximize" : "fa-diagram-project"}
+      size="xl"
+      onClose={onClose}
+    >
+      <form onSubmit={submit} className="grid h-full min-h-[520px] grid-cols-12 gap-3 py-4">
+        <aside className="col-span-12 rounded-[1.5rem] border border-gray-200 bg-[#f7f7f4] p-4 md:col-span-3">
+          <div className="flex items-center gap-3">
+            <span className={`grid h-10 w-10 place-items-center rounded-2xl bg-white text-lg shadow-sm shadow-black/5 ${accent}`}>
+              <Icon name={icon} />
+            </span>
+            <div>
+              <p className="text-sm font-semibold">{label} workspace</p>
+              <p className="text-xs text-gray-500">Repository setup</p>
+            </div>
+          </div>
+          <div className="mt-6 grid gap-1">
+            {setupSteps.map((item, index) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setStep(index)}
+                className="flex h-10 items-center gap-3 rounded-xl px-2 text-left text-sm transition hover:bg-white/70"
+              >
+                <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-semibold ${
+                  index <= step ? "bg-black text-white" : "bg-white text-gray-400"
+                }`}>
+                  {index + 1}
+                </span>
+                <span className={index === step ? "font-semibold text-black" : "text-gray-500"}>{item}</span>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="col-span-12 flex min-h-0 flex-col rounded-[1.5rem] border border-gray-200 bg-white p-5 md:col-span-9">
+          <div className="min-h-0 flex-1">
+            {workspaceMode === "infra" && step === 0 ? (
+              <div className="grid gap-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Cloud setup</p>
+                  <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Connect the Infra cloud account.</h3>
+                  <p className="mt-3 text-sm leading-6 text-gray-500">
+                    Pick the provider and enter the credentials Terraform should use from the sandbox.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <CloudSetupChoice provider="azure" active={cloudProvider === "azure"} onClick={() => setCloudProviderAndReset("azure")} />
+                  <CloudSetupChoice provider="aws" active={cloudProvider === "aws"} onClick={() => setCloudProviderAndReset("aws")} />
+                </div>
+
+                <div className="grid gap-4 rounded-[1.5rem] border border-gray-200 bg-[#f7f7f4] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="grid h-10 w-10 place-items-center rounded-2xl bg-white shadow-sm shadow-black/5">
+                        <CloudProviderLogo provider={cloudProvider} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-gray-900">{cloudProviderLabel(cloudProvider)} credentials</p>
+                        <p className="text-xs text-gray-500">Saved before repository setup finishes.</p>
+                      </div>
+                    </div>
+                    {credentialTest ? (
+                      <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                        credentialTest.status === "connected" ? "bg-emerald-50 text-emerald-700" : credentialTest.status === "configured" ? "bg-gray-100 text-gray-600" : "bg-red-50 text-red-700"
+                      }`}>
+                        {credentialTest.label}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {cloudFields.map((field) => (
+                      <label key={field.name} className={field.wide ? "grid gap-2 text-sm font-medium text-gray-700 sm:col-span-2" : "grid gap-2 text-sm font-medium text-gray-700"}>
+                        {field.label}
+                        <input
+                          type={field.type || "text"}
+                          value={cloudDetails[field.name] || ""}
+                          onChange={(event) => setCloudDetail(field.name, event.target.value)}
+                          placeholder={field.type === "password" && providerConnection?.provider === cloudProvider ? "Leave blank to keep existing secret" : field.placeholder || field.fallback}
+                          className="h-11 rounded-2xl border border-gray-200 bg-white px-4 text-black outline-none transition focus:border-black"
+                        />
+                      </label>
+                    ))}
+                  </div>
+
+                  {credentialTest ? (
+                    <p className={`rounded-[1.25rem] p-3 text-xs leading-5 ${
+                      credentialTest.status === "connected" ? "bg-emerald-50 text-emerald-800" : credentialTest.status === "configured" ? "bg-white text-gray-600" : "bg-red-50 text-red-700"
+                    }`}>
+                      {credentialTest.detail}
+                    </p>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={testCloudCredentials}
+                    disabled={credentialTesting}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-300 sm:w-fit"
+                  >
+                    <Icon name={credentialTesting ? "fa-circle-notch fa-spin" : "fa-shield-halved"} />
+                    {credentialTesting ? "Checking credentials" : cloudProvider === "azure" ? "Test Azure credentials" : "Check AWS credentials"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {step === sourceStep ? (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Repository source</p>
+                <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Choose how {label} starts.</h3>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <ProfileChoiceCard
+                    active={repositoryMode === (workspaceMode === "web" ? "nextjs" : "dstack")}
+                    icon={workspaceMode === "web" ? "fa-brands fa-react" : "fa-seedling"}
+                    title={workspaceMode === "web" ? "Next.js template" : "A2W best-practice repo"}
+                    body={workspaceMode === "web" ? "Generate a small TypeScript Next.js app and push it to a new remote." : "Import the DStack Terraform layout into your own remote."}
+                    variant={workspaceMode === "web" ? "react" : "default"}
+                    onClick={() => setRepositoryMode(workspaceMode === "web" ? "nextjs" : "dstack")}
+                  />
+                  <ProfileChoiceCard
+                    active={repositoryMode === "existing"}
+                    icon="fa-brands fa-git-alt"
+                    title="Use my repository"
+                    body={workspaceMode === "web" ? "Clone an existing application repository." : "Clone an existing Terraform repository."}
+                    variant="git"
+                    onClick={() => setRepositoryMode("existing")}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {step === repositoryStep ? (
+              <div className="grid gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Repository details</p>
+                  <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Point A2W at Git.</h3>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-5">
+                  {(["github", "gitlab", "bitbucket", "azure-devops", "generic"] as GitProvider[]).map((provider) => (
+                    <GitProviderChoice
+                      key={provider}
+                      provider={provider}
+                      active={gitProvider === provider}
+                      onClick={() => setGitProvider(provider)}
+                    />
+                  ))}
+                </div>
+                {(repositoryMode === "dstack" || repositoryMode === "nextjs") ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-2 text-sm font-medium text-gray-700">
+                      Repository name
+                      <input value={repositoryName} onChange={(event) => setRepositoryName(event.target.value)} placeholder={workspaceMode === "web" ? "a2w-web-app" : "a2w-infrastructure"} className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black" />
+                    </label>
+                    <label className="grid gap-2 text-sm font-medium text-gray-700">
+                      Organization
+                      <input value={repositoryOwner} onChange={(event) => setRepositoryOwner(event.target.value)} placeholder="optional" className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black" />
+                    </label>
+                  </div>
+                ) : null}
+                <label className="grid gap-2 text-sm font-medium text-gray-700">
+                  Remote URL
+                  <input
+                    value={repositoryUrl}
+                    onChange={(event) => setRepositoryUrl(event.target.value)}
+                    placeholder={workspaceMode === "web" ? "git@github.com:company/web-app.git" : "git@github.com:company/infra.git"}
+                    className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black"
+                  />
+                  <span className="text-xs font-normal leading-5 text-gray-500">
+                    {repositoryMode === "nextjs" ? "Use an empty remote, or leave this blank with a GitHub token so A2W can create it." : "SSH URLs work best for private repositories in self-hosted deployments."}
+                  </span>
+                </label>
+                {repositoryMode === "nextjs" ? (
+                  <div className="grid gap-3 rounded-[1.5rem] border border-[#61dafb]/35 bg-[#f1fbff] p-4">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-9 w-9 place-items-center rounded-xl bg-white text-[#087ea4] shadow-sm shadow-black/5">
+                        <Icon name="fa-brands fa-react" />
+                      </span>
+                      <div>
+                        <p className="text-sm font-semibold text-[#052f3f]">Next.js starter template</p>
+                        <p className="text-xs text-[#087ea4]/75">These values are written into the generated app.</p>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-2 text-sm font-medium text-[#052f3f]">
+                        Package name
+                        <input value={nextjsAppName} onChange={(event) => setNextjsAppName(event.target.value)} placeholder="a2w-web-app" className="h-11 rounded-2xl border border-[#61dafb]/45 bg-white px-4 text-black outline-none transition focus:border-[#087ea4]" />
+                      </label>
+                      <label className="grid gap-2 text-sm font-medium text-[#052f3f]">
+                        Starter headline
+                        <input value={nextjsHeroText} onChange={(event) => setNextjsHeroText(event.target.value)} placeholder="Build from here." className="h-11 rounded-2xl border border-[#61dafb]/45 bg-white px-4 text-black outline-none transition focus:border-[#087ea4]" />
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
+                <label className="grid gap-2 text-sm font-medium text-gray-700">
+                  Branch
+                  <input value={repositoryBranch} onChange={(event) => setRepositoryBranch(event.target.value)} placeholder="main" className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black" />
+                </label>
+              </div>
+            ) : null}
+
+            {step === accessStep ? (
+              <div className="grid gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Git access</p>
+                  <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Choose clone credentials.</h3>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {(["none", "ssh", "token"] as GitAuthMethod[]).map((method) => (
+                    <button
+                      key={method}
+                      type="button"
+                      onClick={() => setGitAuthMethod(method)}
+                      className={`h-11 rounded-2xl border text-sm font-semibold transition ${
+                        gitAuthMethod === method ? "border-black bg-black text-white" : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
+                      }`}
+                    >
+                      {method === "none" ? "Host auth" : method === "ssh" ? "SSH key" : "HTTPS token"}
+                    </button>
+                  ))}
+                </div>
+                {gitAuthMethod === "none" ? (
+                  <p className="rounded-[1.25rem] bg-gray-50 p-4 text-sm leading-6 text-gray-600">
+                    Use this when the remote is public or this self-hosted machine already has Git credentials configured.
+                  </p>
+                ) : null}
+                {gitAuthMethod === "token" ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <input value={gitUsername} onChange={(event) => setGitUsername(event.target.value)} placeholder="Username" className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black" />
+                    <input value={gitToken} onChange={(event) => setGitToken(event.target.value)} placeholder="HTTPS token" type="password" className="h-11 rounded-2xl border border-gray-200 px-4 outline-none focus:border-black" />
+                  </div>
+                ) : null}
+                {gitAuthMethod === "ssh" ? (
+                  <textarea
+                    value={gitSshPrivateKey}
+                    onChange={(event) => setGitSshPrivateKey(event.target.value)}
+                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                    rows={7}
+                    className="thin-scrollbar resize-none rounded-2xl border border-gray-200 p-4 font-mono text-xs outline-none focus:border-black"
+                  />
+                ) : null}
+              </div>
+            ) : null}
+
+            {step === confirmStep ? (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Confirm</p>
+                <h3 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Run repository setup.</h3>
+                <div className="mt-5 grid gap-2 rounded-[1.5rem] border border-gray-200 p-4 text-sm">
+                  <SettingLine label="Mode" value={label} />
+                  {workspaceMode === "infra" ? <SettingLine label="Cloud" value={`${cloudProviderLabel(cloudProvider)} / ${cloudDetails.region || "default region"}`} /> : null}
+                  <SettingLine label="Source" value={repositoryMode === "nextjs" ? "Next.js template" : repositoryMode === "dstack" ? "A2W best practices" : "Existing repository"} />
+                  {repositoryMode === "nextjs" ? <SettingLine label="Template" value={`${nextjsAppName || "a2w-web-app"} / ${nextjsHeroText || "Build from here."}`} /> : null}
+                  <SettingLine label="Remote" value={repositoryUrl || `${gitProviderLabel(gitProvider)} token repository creation`} />
+                  <SettingLine label="Branch" value={repositoryBranch || "provider default"} />
+                  <SettingLine label="Auth" value={gitAuthMethod === "none" ? "Host/public auth" : gitAuthMethod === "ssh" ? "SSH key" : "HTTPS token"} />
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          {error ? <p className="mt-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
+
+          <div className="mt-5 flex flex-col-reverse gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:justify-between">
+            <button type="button" onClick={onClose} className="h-11 rounded-full border border-gray-200 px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300">
+              Cancel
+            </button>
+            <div className="flex gap-2">
+              {step > 0 ? (
+                <button type="button" onClick={() => setStep((current) => Math.max(0, current - 1))} className="h-11 rounded-full border border-gray-200 px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300">
+                  Back
+                </button>
+              ) : null}
+              <button type="submit" disabled={loading} className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-black px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-300">
+                <Icon name={loading ? "fa-circle-notch fa-spin" : step === setupSteps.length - 1 ? "fa-check" : "fa-arrow-right"} />
+                {step === setupSteps.length - 1 ? "Finish setup" : "Continue"}
+              </button>
+            </div>
+          </div>
+        </section>
+      </form>
+    </Modal>
+  );
+}
+
+function ProfileChoiceCard({
+  active,
+  icon,
+  title,
+  body,
+  variant = "default",
+  onClick
+}: {
+  active: boolean;
+  icon: string;
+  title: string;
+  body: string;
+  variant?: "default" | "react" | "git";
+  onClick: () => void;
+}) {
+  const activeStyle = variant === "react"
+    ? "border-[#61dafb] bg-[#61dafb] text-[#052f3f] shadow-[#61dafb]/25 ring-2 ring-[#61dafb] ring-offset-2 ring-offset-white"
+    : variant === "git"
+      ? "border-[#f05032] bg-[#f05032] text-white shadow-[#f05032]/25 ring-2 ring-[#f05032] ring-offset-2 ring-offset-white"
+      : "border-black bg-black text-white shadow-black/10";
+  const idleStyle = variant === "react"
+    ? "border-[#61dafb]/35 bg-[#f1fbff] text-[#052f3f] shadow-[#61dafb]/10 hover:border-[#61dafb]"
+    : variant === "git"
+      ? "border-[#f05032]/25 bg-[#fff6f2] text-[#3b160f] shadow-[#f05032]/10 hover:border-[#f05032]/60"
+      : "border-gray-200 bg-[#f7f7f4] text-gray-700 hover:border-gray-300";
+  const iconStyle = active
+    ? variant === "git"
+      ? "bg-white text-[#f05032]"
+      : variant === "react"
+        ? "bg-white text-[#087ea4]"
+        : "bg-white text-black"
+    : variant === "git"
+      ? "bg-white text-[#f05032]"
+      : variant === "react"
+        ? "bg-white text-[#087ea4]"
+        : "bg-white text-gray-700";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative overflow-hidden rounded-[1.5rem] border p-5 text-left shadow-xl transition hover:-translate-y-0.5 ${
+        active ? activeStyle : idleStyle
+      }`}
+    >
+      <span className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-white/20" />
+      <span className={`relative grid h-11 w-11 place-items-center rounded-2xl shadow-sm shadow-black/5 ${iconStyle}`}>
+        <Icon name={icon} />
+      </span>
+      <p className="relative mt-4 text-base font-semibold">{title}</p>
+      <p className={`relative mt-2 text-sm leading-6 ${
+        active ? variant === "react" ? "text-[#052f3f]/75" : "text-white/75" : variant === "react" ? "text-[#087ea4]/75" : variant === "git" ? "text-[#9a3412]/75" : "text-gray-500"
+      }`}>{body}</p>
+    </button>
+  );
+}
+
+function CloudSetupChoice({
+  provider,
+  active,
+  onClick
+}: {
+  provider: "aws" | "azure";
+  active: boolean;
+  onClick: () => void;
+}) {
+  const azure = provider === "azure";
+  const activeStyle = azure
+    ? "border-[#0078d4] bg-[#0078d4] text-white shadow-[#0078d4]/20"
+    : "border-[#232f3e] bg-[#232f3e] text-white shadow-[#232f3e]/20";
+  const idleStyle = azure
+    ? "border-[#0078d4]/20 bg-[#f2f8ff] text-[#003a63] shadow-[#0078d4]/10 hover:border-[#0078d4]/45"
+    : "border-[#232f3e]/20 bg-[#fff8ed] text-[#2c1b00] shadow-[#ff9900]/10 hover:border-[#ff9900]/45";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative overflow-hidden rounded-[1.5rem] border p-4 text-left shadow-xl transition hover:-translate-y-0.5 ${active ? activeStyle : idleStyle}`}
+    >
+      <span className="pointer-events-none absolute -right-8 -top-8 h-28 w-28 rounded-full bg-white/15" />
+      <span className="relative grid h-10 w-10 place-items-center rounded-2xl bg-white shadow-sm shadow-black/5">
+        <CloudProviderLogo provider={provider} />
+      </span>
+      <p className="relative mt-4 text-base font-semibold">{cloudProviderLabel(provider)}</p>
+      <p className={`relative mt-1 text-xs leading-5 ${active ? "text-white/75" : azure ? "text-[#0078d4]/75" : "text-[#7a4a00]/75"}`}>
+        {azure ? "Use an Azure app registration and subscription." : "Use an IAM role and external ID."}
+      </p>
+      <span className={`relative mt-4 inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold ${active ? "bg-white text-black" : "bg-white/70 text-gray-600"}`}>
+        {active ? "Selected" : "Select"}
+      </span>
+    </button>
+  );
+}
+
+function profileCredentialDefaults(provider: CloudProvider, connection?: Omit<ProviderConnection, "secrets">) {
+  return Object.fromEntries(credentialFields(provider).map((field) => [field.name, connection?.provider === provider ? connection.details[field.name] || field.fallback : field.fallback]));
+}
+
+function gitProviderLabel(provider: GitProvider) {
+  if (provider === "github") return "GitHub";
+  if (provider === "gitlab") return "GitLab";
+  if (provider === "bitbucket") return "Bitbucket";
+  if (provider === "azure-devops") return "Azure DevOps";
+  return "Other";
+}
+
+function GitProviderChoice({
+  provider,
+  active,
+  onClick
+}: {
+  provider: GitProvider;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const meta = gitProviderChoiceMeta(provider);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative min-h-24 overflow-hidden rounded-[1.25rem] border p-3 text-left shadow-lg transition hover:-translate-y-0.5 ${
+        active ? meta.activeCard : meta.idleCard
+      }`}
+    >
+      <span className={`pointer-events-none absolute -right-7 -top-7 h-20 w-20 rounded-full ${active ? "bg-white/15" : meta.glow}`} />
+      <span className={`relative grid h-8 w-8 place-items-center rounded-xl text-base shadow-sm shadow-black/5 ${active ? meta.activeIcon : meta.idleIcon}`}>
+        <Icon name={meta.icon} />
+      </span>
+      <span className="relative mt-3 block truncate text-xs font-semibold">{meta.label}</span>
+      <span className={`relative mt-2 inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold ${active ? meta.activeBadge : meta.idleBadge}`}>
+        {active ? "Selected" : "Select"}
+      </span>
+    </button>
+  );
+}
+
+function gitProviderChoiceMeta(provider: GitProvider) {
+  if (provider === "github") {
+    return {
+      label: "GitHub",
+      icon: "fa-brands fa-github",
+      activeCard: "border-black bg-black text-white shadow-black/15",
+      activeIcon: "bg-white text-black",
+      activeBadge: "bg-white text-black",
+      idleCard: "border-gray-200 bg-white text-gray-700 shadow-black/5 hover:border-black/30",
+      idleIcon: "bg-gray-50 text-black",
+      idleBadge: "bg-gray-100 text-gray-500",
+      glow: "bg-black/10"
+    };
+  }
+  if (provider === "gitlab") {
+    return {
+      label: "GitLab",
+      icon: "fa-brands fa-gitlab",
+      activeCard: "border-[#fc6d26] bg-[#fc6d26] text-white shadow-[#fc6d26]/20",
+      activeIcon: "bg-white text-[#fc6d26]",
+      activeBadge: "bg-white text-[#fc6d26]",
+      idleCard: "border-[#fc6d26]/20 bg-white text-gray-700 shadow-[#fc6d26]/10 hover:border-[#fc6d26]/45",
+      idleIcon: "bg-[#fc6d26]/10 text-[#fc6d26]",
+      idleBadge: "bg-[#fc6d26]/10 text-[#fc6d26]",
+      glow: "bg-[#fc6d26]/14"
+    };
+  }
+  if (provider === "bitbucket") {
+    return {
+      label: "Bitbucket",
+      icon: "fa-brands fa-bitbucket",
+      activeCard: "border-[#0052cc] bg-[#0052cc] text-white shadow-[#0052cc]/20",
+      activeIcon: "bg-white text-[#0052cc]",
+      activeBadge: "bg-white text-[#0052cc]",
+      idleCard: "border-[#0052cc]/20 bg-white text-gray-700 shadow-[#0052cc]/10 hover:border-[#0052cc]/45",
+      idleIcon: "bg-[#0052cc]/10 text-[#0052cc]",
+      idleBadge: "bg-[#0052cc]/10 text-[#0052cc]",
+      glow: "bg-[#0052cc]/14"
+    };
+  }
+  if (provider === "azure-devops") {
+    return {
+      label: "Azure",
+      icon: "fa-brands fa-microsoft",
+      activeCard: "border-[#0078d4] bg-[#0078d4] text-white shadow-[#0078d4]/20",
+      activeIcon: "bg-white text-[#0078d4]",
+      activeBadge: "bg-white text-[#0078d4]",
+      idleCard: "border-[#0078d4]/20 bg-white text-gray-700 shadow-[#0078d4]/10 hover:border-[#0078d4]/45",
+      idleIcon: "bg-[#0078d4]/10 text-[#0078d4]",
+      idleBadge: "bg-[#0078d4]/10 text-[#0078d4]",
+      glow: "bg-[#0078d4]/14"
+    };
+  }
+  return {
+    label: "Other",
+    icon: "fa-code-branch",
+    activeCard: "border-gray-800 bg-gray-800 text-white shadow-black/15",
+    activeIcon: "bg-white text-gray-800",
+    activeBadge: "bg-white text-gray-800",
+    idleCard: "border-gray-200 bg-white text-gray-700 shadow-black/5 hover:border-gray-400",
+    idleIcon: "bg-gray-100 text-gray-700",
+    idleBadge: "bg-gray-100 text-gray-500",
+    glow: "bg-gray-900/8"
+  };
+}
+
+function SettingLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-4">
+      <span className="text-gray-500">{label}</span>
+      <span className="min-w-0 truncate text-right font-medium text-gray-900" title={value}>{value || "-"}</span>
+    </div>
+  );
+}
+
 function VariableField({
   variable,
   value,
@@ -4600,6 +5601,11 @@ function modeLabel(mode: SandboxMode, progressive = false) {
   if (mode === "terraform-plan") return progressive ? "Running Terraform plan" : "Terraform plan";
   if (mode === "terraform-apply") return progressive ? "Applying Terraform" : "Terraform apply";
   if (mode === "terraform-destroy") return progressive ? "Destroying Terraform resources" : "Terraform destroy";
+  if (mode === "npm-install") return progressive ? "Installing dependencies" : "NPM install";
+  if (mode === "npm-audit") return progressive ? "Auditing dependencies" : "NPM audit";
+  if (mode === "npm-lint") return progressive ? "Running lint" : "NPM lint";
+  if (mode === "npm-test") return progressive ? "Running tests" : "NPM test";
+  if (mode === "npm-build") return progressive ? "Building web app" : "NPM build";
   return progressive ? "Running validation" : "Validate files";
 }
 
@@ -4608,7 +5614,24 @@ function modeDescription(mode: SandboxMode) {
   if (mode === "terraform-plan") return "Run provider-backed Terraform plan. This requires network and credentials.";
   if (mode === "terraform-apply") return "Run Terraform apply inside the configured sandbox backend. This can create cloud resources.";
   if (mode === "terraform-destroy") return "Run Terraform destroy inside the configured sandbox backend. This removes resources tracked in the local Terraform state.";
+  if (mode === "npm-install") return "Install Node dependencies for the active web workspace.";
+  if (mode === "npm-audit") return "Run npm audit against the active web workspace with sandbox network enabled.";
+  if (mode === "npm-lint") return "Run the package lint script inside the sandbox-mounted workspace.";
+  if (mode === "npm-test") return "Run the package test script inside the sandbox-mounted workspace.";
+  if (mode === "npm-build") return "Run the package build script inside the sandbox-mounted workspace.";
   return "Run offline checks and optional provider validation inside the configured sandbox backend.";
+}
+
+function npmActionMode(action: NpmSlashAction): SandboxMode {
+  if (action === "install") return "npm-install";
+  if (action === "audit") return "npm-audit";
+  if (action === "lint") return "npm-lint";
+  if (action === "test") return "npm-test";
+  return "npm-build";
+}
+
+function isTerraformSandboxMode(mode: SandboxMode) {
+  return mode === "terraform-fmt" || mode === "validate" || mode === "terraform-plan" || mode === "terraform-apply" || mode === "terraform-destroy";
 }
 
 function MiniStat({ label, value }: { label: string; value: string }) {

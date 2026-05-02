@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
-import type { Chat, InfraPlan, Message, ProviderConnection, Workspace } from "@/lib/types";
+import type { Chat, InfraPlan, Message, ProviderConnection, Workspace, WorkspaceMode } from "@/lib/types";
+import { WORKSPACE_MODES, chatMode, normalizeWorkspaceMode } from "@/lib/workspace-mode";
 import { AppLogo } from "./AppLogo";
 import { Icon } from "./Icon";
 import { Modal } from "./Modal";
@@ -15,6 +16,7 @@ const navItems = [
 ] as const;
 const CHAT_UPSERT_EVENT = "a2w:chat-upsert";
 const CHAT_DELETE_EVENT = "a2w:chat-delete";
+const WORKSPACE_RETURN_MODE_STORAGE_KEY = "a2w.workspace.returnMode";
 
 type ChatThread = {
   id: string;
@@ -55,7 +57,9 @@ export function DashboardShell({
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
   const [creatingChat, setCreatingChat] = useState(false);
   const [chatList, setChatList] = useState(chats);
-  const threads = buildChatThreads(chatList);
+  const [activeMode, setActiveMode] = useState<WorkspaceMode>(normalizeWorkspaceMode(workspace.mode));
+  const modeChats = chatList.filter((chat) => chatMode(chat) === activeMode);
+  const threads = buildChatThreads(modeChats);
   const latestThread = threads[0];
   const activeChatId = searchParams.get("chat") || latestThread?.id || "new";
   const isChat = pathname === "/dashboard/agent";
@@ -68,9 +72,22 @@ export function DashboardShell({
   }, [chats]);
 
   useEffect(() => {
+    setActiveMode(normalizeWorkspaceMode(workspace.mode));
+  }, [workspace.mode]);
+
+  useEffect(() => {
+    const previous = document.body.style.background;
+    document.body.style.background = activeMode === "web" ? "#007acc" : "#5c4ee5";
+    return () => {
+      document.body.style.background = previous;
+    };
+  }, [activeMode]);
+
+  useEffect(() => {
     function handleChatUpsert(event: Event) {
       const chat = (event as CustomEvent<Chat>).detail;
       if (!chat?.id) return;
+      if (chatMode(chat) !== activeMode) return;
       setChatList((current) => current.some((item) => item.id === chat.id)
         ? current.map((item) => item.id === chat.id ? chat : item)
         : [chat, ...current]);
@@ -88,7 +105,23 @@ export function DashboardShell({
       window.removeEventListener(CHAT_UPSERT_EVENT, handleChatUpsert);
       window.removeEventListener(CHAT_DELETE_EVENT, handleChatDelete);
     };
-  }, []);
+  }, [activeMode]);
+
+  async function switchMode(nextMode: WorkspaceMode) {
+    if (nextMode === activeMode) return;
+    window.sessionStorage.setItem(WORKSPACE_RETURN_MODE_STORAGE_KEY, activeMode);
+    setActiveMode(nextMode);
+    setNavigationOpen(false);
+    const response = await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: nextMode })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not switch workspace mode.");
+    router.replace("/dashboard/agent");
+    router.refresh();
+  }
 
   async function renameChat(chatId: string, title: string) {
     setSavingChatId(chatId);
@@ -137,7 +170,7 @@ export function DashboardShell({
       const response = await fetch("/api/chats", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({})
+        body: JSON.stringify({ mode: activeMode })
       });
       const data = await response.json();
       if (!response.ok || !data.chat?.id) throw new Error(data.error || "Could not create chat.");
@@ -203,11 +236,13 @@ export function DashboardShell({
               newChatActive={newChatActive}
               homeHref={homeHref}
               activeModal={modal}
+              activeMode={activeMode}
               savingChatId={savingChatId}
               creatingChat={creatingChat}
               onRenameChat={renameChat}
               onDeleteChat={deleteChat}
               onNewChat={createChat}
+              onSwitchMode={switchMode}
               onOpenModal={(nextModal) => {
                 setModal(nextModal);
                 setNavigationOpen(false);
@@ -358,11 +393,13 @@ function ExpandedSidebar({
   newChatActive,
   homeHref,
   activeModal,
+  activeMode,
   savingChatId,
   creatingChat,
   onRenameChat,
   onDeleteChat,
   onNewChat,
+  onSwitchMode,
   onOpenModal,
   onNavigate
 }: {
@@ -373,11 +410,13 @@ function ExpandedSidebar({
   newChatActive: boolean;
   homeHref: string;
   activeModal: ShellModal;
+  activeMode: WorkspaceMode;
   savingChatId: string | null;
   creatingChat: boolean;
   onRenameChat: (chatId: string, title: string) => Promise<void>;
   onDeleteChat: (chatId: string) => Promise<void>;
   onNewChat: () => void;
+  onSwitchMode: (mode: WorkspaceMode) => Promise<void>;
   onOpenModal: (modal: Exclude<ShellModal, null>) => void;
   onNavigate: () => void;
 }) {
@@ -426,11 +465,15 @@ function ExpandedSidebar({
           <Link href={homeHref} onClick={onNavigate} className="flex min-w-0 flex-1 items-center gap-3" aria-label="A2W chat home">
             <AppLogo decorative className="h-10 w-10 shrink-0" />
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">A2W-Codex-Terraform-v0.0.1</span>
+              <span className="block truncate text-sm font-semibold">A2W-Code</span>
               <span className="block truncate text-xs text-gray-500">{workspace.companyName}</span>
             </span>
           </Link>
         </div>
+      </div>
+
+      <div className="border-b border-gray-200 p-3">
+        <ModeSwitcher activeMode={activeMode} onSwitchMode={onSwitchMode} />
       </div>
 
       <div className="border-b border-gray-200 p-3">
@@ -600,6 +643,58 @@ function ExpandedSidebar({
           })}
         </div>
       </nav>
+    </div>
+  );
+}
+
+function ModeSwitcher({
+  activeMode,
+  onSwitchMode
+}: {
+  activeMode: WorkspaceMode;
+  onSwitchMode: (mode: WorkspaceMode) => Promise<void>;
+}) {
+  const [pendingMode, setPendingMode] = useState<WorkspaceMode | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function selectMode(mode: WorkspaceMode) {
+    if (mode === activeMode || pendingMode) return;
+    setPendingMode(mode);
+    setError(null);
+    try {
+      await onSwitchMode(mode);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError));
+    } finally {
+      setPendingMode(null);
+    }
+  }
+
+  return (
+    <div className="grid gap-2">
+      <div className="grid grid-cols-2 gap-1 rounded-2xl border border-gray-200 bg-white p-1">
+        {WORKSPACE_MODES.map((mode) => {
+          const active = activeMode === mode.id;
+          const pending = pendingMode === mode.id;
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => selectMode(mode.id)}
+              disabled={Boolean(pendingMode)}
+              className={`flex h-10 items-center justify-center gap-2 rounded-xl text-xs font-semibold transition ${
+                active ? "bg-black text-white" : "text-gray-500 hover:bg-gray-50 hover:text-black"
+              } disabled:cursor-wait disabled:opacity-70`}
+              title={mode.description}
+              aria-pressed={active}
+            >
+              <Icon name={pending ? "fa-circle-notch fa-spin" : mode.icon} />
+              <span>{mode.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {error ? <p className="px-1 text-xs leading-5 text-red-600">{error}</p> : null}
     </div>
   );
 }

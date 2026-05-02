@@ -3,7 +3,7 @@ FROM alpine:3.20
 ARG TERRAFORM_VERSION=1.9.8
 ARG KUSTOMIZE_VERSION=5.5.0
 
-RUN apk add --no-cache bash ca-certificates curl git unzip && \
+RUN apk add --no-cache bash ca-certificates curl git nodejs npm unzip && \
     case "$(uname -m)" in \
       x86_64) export TOOL_ARCH="amd64" ;; \
       aarch64|arm64) export TOOL_ARCH="arm64" ;; \

@@ -38,7 +38,7 @@ export function AuthForm({ defaultUsername = "admin" }: { defaultUsername?: stri
     <div className="motion-enter w-full max-w-[460px] p-2 sm:p-4">
       <div className="mb-8">
         <AppLogo decorative className="h-10 w-10" />
-        <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">A2W-Codex-Terraform-v0.0.1</p>
+        <p className="mt-6 text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">A2W-Code</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Sign in</h1>
         <p className="mt-3 text-sm leading-6 text-gray-600">
           Use the local admin credentials for this self-hosted instance.

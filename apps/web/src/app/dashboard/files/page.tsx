@@ -4,6 +4,6 @@ import { listWorkspaceFiles } from "@/lib/materialize";
 
 export default async function FilesPage() {
   const data = await requireDashboardData();
-  const files = await listWorkspaceFiles(data.workspace.id);
+  const files = await listWorkspaceFiles(data.workspace.id, data.workspace.mode || "infra");
   return <FilesBrowser initialFiles={files} />;
 }

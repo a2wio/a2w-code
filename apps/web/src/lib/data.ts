@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppData, Workspace } from "./types";
+import type { AppData, Workspace, WorkspaceMode } from "./types";
 
 const moduleRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -51,12 +51,14 @@ export function workspaceRoot(workspaceId: string) {
   return join(WORKSPACES_ROOT, workspaceId);
 }
 
-export function workspaceRepoRoot(workspaceId: string) {
+export function workspaceRepoRoot(workspaceId: string, mode: WorkspaceMode = "infra") {
+  if (mode === "web") return join(workspaceRoot(workspaceId), "repositories", "web");
   return join(workspaceRoot(workspaceId), "repository");
 }
 
 export async function ensureWorkspaceFolders(workspace: Workspace) {
-  await mkdir(workspaceRepoRoot(workspace.id), { recursive: true });
+  await mkdir(workspaceRepoRoot(workspace.id, "infra"), { recursive: true });
+  await mkdir(workspaceRepoRoot(workspace.id, "web"), { recursive: true });
 }
 
 function resolveProjectRoot() {

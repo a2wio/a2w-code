@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "A2W-Codex-Terraform-v0.0.1",
+  title: "A2W-Code",
   description: "Agent-native infrastructure operations with Terraform, GitOps, and sandboxed execution.",
   icons: {
     icon: [

@@ -22,6 +22,7 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
       sandboxRuns={data.sandboxRuns}
       terraformRoots={data.terraformRoots}
       gitStatus={data.gitStatus}
+      workspaceMode={data.workspace.mode || "infra"}
       provider={data.workspace.cloudPreference}
       providerConnection={activeProviderConnection}
       selectedTerraformRoot={data.workspace.selectedTerraformRoot}

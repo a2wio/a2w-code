@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import type { CloudProvider, InfraPlan, ProviderConnection, Workspace } from "./types";
 import { listWorkspaceFiles } from "./materialize";
 import { workspaceRepoRoot } from "./data";
+import { workspaceMode } from "./workspace-mode";
 
 type CodexRun = {
   finalMessage: string;
@@ -44,9 +45,10 @@ export async function runCodexWorkspaceAgent(input: {
   codexThreadId?: string;
   selectedRootPath?: string;
 }): Promise<CodexRun> {
-  const before = await listWorkspaceFiles(input.workspace.id);
+  const mode = workspaceMode(input.workspace);
+  const before = await listWorkspaceFiles(input.workspace.id, mode);
   const beforeByPath = new Map(before.map((file) => [file.path, `${file.size}:${file.updatedAt}`]));
-  const repoRoot = workspaceRepoRoot(input.workspace.id);
+  const repoRoot = workspaceRepoRoot(input.workspace.id, mode);
   const tempDir = await mkdtemp(join(tmpdir(), "a2w-codex-"));
   const finalMessagePath = join(tempDir, "last-message.txt");
 
@@ -59,7 +61,7 @@ export async function runCodexWorkspaceAgent(input: {
       codexThreadId: input.codexThreadId
     });
     const finalMessage = (await readFinalMessage(finalMessagePath)) || "Codex completed the workspace task.";
-    const after = await listWorkspaceFiles(input.workspace.id);
+    const after = await listWorkspaceFiles(input.workspace.id, mode);
     const changedFiles = after
       .filter((file) => beforeByPath.get(file.path) !== `${file.size}:${file.updatedAt}`)
       .map((file) => file.path);
@@ -187,6 +189,31 @@ function codexPrompt(input: {
   providerConnection?: ProviderConnection;
   selectedRootPath?: string;
 }) {
+  const mode = workspaceMode(input.workspace);
+  if (mode === "web") {
+    return `You are the local code-writing agent inside A2W-Code, a self-hosted Codex workspace.
+
+Workspace:
+- Name: ${input.workspace.companyName}
+- Mode: Web / Next.js
+
+Operator request:
+${input.message}
+
+Execution contract:
+- Work only inside the current repository.
+- Treat this repository as a web application codebase.
+- Prefer existing package scripts, framework conventions, and small reviewable changes.
+- Do not run long-lived dev servers unless the operator explicitly asks.
+- Do not write secrets, access tokens, or private keys to files.
+- If the request is only a question, answer it without changing files.
+
+Final response:
+- Summarize what you changed or decided.
+- List changed files when applicable.
+- State the next operator action, usually npm lint, npm test, npm build, review, commit, then push.`;
+  }
+
   return `You are the local code-writing agent inside A2W, a self-hosted infrastructure console.
 
 Workspace:

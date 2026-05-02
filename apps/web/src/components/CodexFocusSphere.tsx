@@ -10,6 +10,7 @@ export type CodexFocusAction = {
   kind: "search" | "command" | "file" | "thinking" | "generic";
   label: string;
   detail?: string;
+  output?: string;
 };
 
 type CodexFocusSphereProps = {
@@ -21,6 +22,7 @@ type CodexFocusSphereProps = {
   additions: number;
   deletions: number;
   actions: CodexFocusAction[];
+  sandboxActions?: CodexFocusAction[];
   responseSummary?: string;
   presentation?: "focus" | "new-chat";
   onShowTranscript?: () => void;
@@ -41,6 +43,7 @@ export function CodexFocusSphere({
   additions,
   deletions,
   actions,
+  sandboxActions = [],
   responseSummary,
   presentation = "focus",
   onShowTranscript
@@ -279,7 +282,12 @@ export function CodexFocusSphere({
         }}
       />
 
-      <ActionNotificationReel actions={actions} />
+      {minimal ? null : (
+        <>
+          <ActionNotificationReel actions={actions} />
+          <SandboxActionReel actions={sandboxActions} />
+        </>
+      )}
 
       <div className={`absolute inset-x-4 z-10 mx-auto grid max-w-3xl gap-2 sm:inset-x-8 ${minimal ? "top-[63%]" : "bottom-4 sm:bottom-5"}`}>
         <div className="mx-auto mb-1 flex max-w-xl flex-col items-center text-center">
@@ -469,6 +477,59 @@ function ActionNotificationReel({ actions }: { actions: CodexFocusAction[] }) {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SandboxActionReel({ actions }: { actions: CodexFocusAction[] }) {
+  const [hovered, setHovered] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const action = actions.at(-1);
+  const actionSignature = action ? `${action.label}:${action.detail || ""}:${action.output || ""}` : "";
+
+  useEffect(() => {
+    setHovered(false);
+    setExpanded(false);
+  }, [actionSignature]);
+
+  if (!action) return null;
+
+  const hasOutput = Boolean(action.output?.trim());
+  const description = hasOutput && hovered ? expanded ? "click to collapse output" : "click to explore output" : action.detail;
+
+  return (
+    <div className={`absolute bottom-4 left-4 z-20 transition-[width] duration-300 sm:bottom-5 sm:left-5 ${expanded ? "w-[min(42rem,calc(100%-2rem))]" : "w-[min(23.5rem,calc(100%-2rem))]"}`}>
+      <div
+        role={hasOutput ? "button" : undefined}
+        tabIndex={hasOutput ? 0 : undefined}
+        onClick={() => hasOutput && setExpanded((current) => !current)}
+        onKeyDown={(event) => {
+          if (!hasOutput || (event.key !== "Enter" && event.key !== " ")) return;
+          event.preventDefault();
+          setExpanded((current) => !current);
+        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        className={`motion-enter relative min-h-[5.75rem] origin-left rounded-2xl px-3.5 py-3 text-xs text-gray-700 transition ${hasOutput ? "cursor-pointer hover:bg-white/[0.18]" : ""}`}
+        aria-live="polite"
+        aria-expanded={hasOutput ? expanded : undefined}
+      >
+        <div className="flex items-start gap-2">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/40 text-[11px] text-gray-600">
+          <Icon name={focusActionIcon(action.kind)} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Sandbox</span>
+          <span className="mt-1 block text-sm font-semibold leading-5 text-gray-800">{action.label}</span>
+          {description ? <span className={`mt-1 block max-h-12 overflow-hidden break-words text-[11px] leading-5 ${hovered && hasOutput ? "font-semibold text-gray-600" : "font-mono text-gray-500"}`}>{description}</span> : null}
+        </span>
+        </div>
+        {expanded && hasOutput ? (
+          <pre className="thin-scrollbar mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-2xl bg-black/[0.86] p-3 font-mono text-[11px] leading-5 text-gray-100 shadow-inner shadow-black/20">
+            {action.output}
+          </pre>
+        ) : null}
       </div>
     </div>
   );
