@@ -305,6 +305,8 @@ export function AgentChat({
   const [mergeOpen, setMergeOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [mobileFilesOpen, setMobileFilesOpen] = useState(false);
   const [profileSetupOpen, setProfileSetupOpen] = useState(false);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
   const [savingVariables, setSavingVariables] = useState(false);
@@ -1285,7 +1287,7 @@ export function AgentChat({
         ) : null}
         <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           {immersiveMode ? null : (
-            <div className="relative flex h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:px-6">
+            <div className="relative hidden h-[65px] items-center justify-between gap-4 border-b border-gray-100 px-5 sm:flex sm:px-6">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
                 {activeChatId !== "new" && selectedRoot ? (
                   <TerraformCurrentMeta root={selectedRoot} roots={roots} onSelectRoot={selectRoot} />
@@ -1303,6 +1305,46 @@ export function AgentChat({
               ) : null}
             </div>
           )}
+
+          {editorMode && !freshChatMode ? (
+            <MobileWorkspaceLauncher
+              workspaceMode={workspaceMode}
+              plan={selectedPlan}
+              root={selectedRoot}
+              loading={loading}
+              applyDisabled={applyDisabled}
+              applyRuntimeEnabled={applyRuntimeEnabled}
+              open={mobileActionsOpen}
+              displayMode={displayMode}
+              missingVariables={missingRequiredVariables.length}
+              canMergeBranch={git.initialized && !isDetachedGit(git) && Boolean(git.branch)}
+              onOpenChange={setMobileActionsOpen}
+              onFiles={() => setMobileFilesOpen(true)}
+              onDisplayMode={() => setDisplayMode(displayMode === "focus" ? "transcript" : "focus")}
+              onViewPlan={() => selectedPlan && setPlanModalOpen(true)}
+              onRuns={() => setRunsOpen(true)}
+              onVariables={openVariables}
+              onDiff={openDiff}
+              onGit={openGit}
+              onCommitPush={openCommitPush}
+              onMerge={openMerge}
+              onApprove={() => selectedPlan && void approve(selectedPlan)}
+              onTerraformSandbox={(nextMode) => selectedPlan && openSandbox(selectedPlan, nextMode)}
+              onWorkspaceSandbox={runWorkspaceSandbox}
+            />
+          ) : null}
+
+          {editorMode && !freshChatMode && !focusModeActive ? (
+            <button
+              type="button"
+              onClick={() => setDisplayMode("focus")}
+              className="absolute left-1/2 top-3 z-50 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-2xl border border-gray-200 bg-white/90 px-3 text-xs font-semibold text-gray-700 shadow-xl shadow-black/10 backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black lg:hidden"
+              aria-label="Focus mode"
+            >
+              <Icon name="fa-circle-nodes" />
+              <span>Focus</span>
+            </button>
+          ) : null}
 
           {minimalChatMode ? (
             <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -1334,7 +1376,7 @@ export function AgentChat({
                 responseSummary={focusState.responseSummary}
                 onShowTranscript={() => setDisplayMode("transcript")}
               />
-              <div className="absolute left-2 top-2 z-40 sm:left-4 sm:top-4">
+              <div className="absolute left-2 top-2 z-40 hidden lg:block">
                 <WorkspaceActionBar
                   workspaceMode={workspaceMode}
                   plan={selectedPlan}
@@ -1374,11 +1416,11 @@ export function AgentChat({
             className={
               minimalChatMode
                 ? "absolute inset-x-0 top-[calc(67%+2.25rem)] z-30 px-3 py-0 sm:px-5"
-                : `shrink-0 px-3 py-2 sm:px-5 ${immersiveMode ? "h-[144px] border-t-0 bg-[#fbfbf9]" : "h-[168px] border-t border-gray-100 bg-white"}`
+                : `shrink-0 px-3 py-2 sm:px-5 ${immersiveMode ? "h-[132px] border-t-0 bg-[#fbfbf9] sm:h-[144px]" : "h-[124px] border-t border-gray-100 bg-white sm:h-[168px]"}`
             }
           >
             {!focusModeActive && editorMode && !freshChatMode ? (
-              <div className="mx-auto max-w-3xl">
+              <div className="mx-auto hidden max-w-3xl lg:block">
                 <WorkspaceActionBar
                   workspaceMode={workspaceMode}
                   plan={selectedPlan}
@@ -1484,6 +1526,25 @@ export function AgentChat({
           </form>
           {editorMode && !freshChatMode ? <ChatStatusBar provider={provider} providerConnection={activeProviderConnection} git={git} onCredentialsClick={() => setCredentialsOpen(true)} /> : null}
         </div>
+
+        {mobileFilesOpen && editorMode && !freshChatMode ? (
+          <div className="absolute inset-0 z-[60] lg:hidden">
+            <button type="button" className="absolute inset-0 cursor-default bg-black/10 backdrop-blur-[1px]" aria-label="Close file browser" onClick={() => setMobileFilesOpen(false)} />
+            <div className="absolute inset-y-0 left-0 w-[min(88vw,340px)]">
+              <EditorFileRail
+                files={editorFiles}
+                git={git}
+                loading={editorFilesLoading}
+                onOpenFile={(path) => {
+                  setMobileFilesOpen(false);
+                  openFilePanel(path);
+                }}
+                mobile
+                onClose={() => setMobileFilesOpen(false)}
+              />
+            </div>
+          </div>
+        ) : null}
 
         {filePanelOpen ? (
           <FileSidePanel
@@ -1685,12 +1746,16 @@ function EditorFileRail({
   files,
   git,
   loading,
-  onOpenFile
+  onOpenFile,
+  mobile = false,
+  onClose
 }: {
   files: FileEntry[];
   git: GitWorkspaceStatus;
   loading: boolean;
   onOpenFile: (path: string) => void;
+  mobile?: boolean;
+  onClose?: () => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => initialEditorExpanded(files));
   const [diffOnly, setDiffOnly] = useState(false);
@@ -1725,7 +1790,7 @@ function EditorFileRail({
   }
 
   return (
-    <aside className="hidden h-full w-[286px] shrink-0 flex-col border-r border-gray-200 bg-[#fbfbf9] lg:flex">
+    <aside className={`${mobile ? "flex h-full w-full shadow-2xl shadow-black/15" : "hidden h-full w-[286px] shrink-0 lg:flex"} flex-col border-r border-gray-200 bg-[#fbfbf9]`}>
       <div className="flex h-[65px] items-center justify-between gap-2 border-b border-gray-200 px-3">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1756,6 +1821,17 @@ function EditorFileRail({
           >
             <Icon name="fa-code-compare" />
           </button>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+              aria-label="Close file browser"
+              title="Close"
+            >
+              <Icon name="fa-xmark" />
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1880,7 +1956,7 @@ function ChatStatusBar({
   const credentialsConfigured = Boolean(providerConnection);
 
   return (
-    <footer className="flex h-7 shrink-0 items-center justify-between gap-4 overflow-hidden border-t border-gray-100 bg-[#fbfbf9] px-4 text-[11px] text-gray-500 sm:px-6" aria-label="Workspace status">
+    <footer className="hidden h-7 shrink-0 items-center justify-between gap-4 overflow-hidden border-t border-gray-100 bg-[#fbfbf9] px-4 text-[11px] text-gray-500 sm:flex sm:px-6" aria-label="Workspace status">
       <StatusItem label="Git" value={`${repository} / ${branch}`} monospace />
       <span className="flex shrink-0 items-center gap-3">
         <span className="flex shrink-0 items-center gap-1.5">
@@ -1992,7 +2068,7 @@ function FileSidePanel({
   return (
     <div className="absolute inset-y-0 left-0 right-0 z-40 lg:left-[286px]">
       <button type="button" className="absolute inset-0 cursor-default bg-white/10 backdrop-blur-[1px]" aria-label="Close file preview" onClick={onClose} />
-      <aside className="absolute left-0 top-0 flex h-full w-[min(72%,1120px)] min-w-0 max-w-[calc(100%-32px)] overflow-hidden border-r border-gray-200 bg-white shadow-2xl shadow-black/12 sm:min-w-[640px]">
+      <aside className="absolute left-0 top-0 flex h-full w-[min(92vw,1120px)] min-w-0 max-w-[calc(100%-18px)] overflow-hidden border-r border-gray-200 bg-white shadow-2xl shadow-black/12 sm:min-w-[640px] lg:w-[min(72%,1120px)] lg:max-w-[calc(100%-32px)]">
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-[65px] shrink-0 items-center justify-between gap-4 border-b border-gray-200 px-5">
             <div className="min-w-0">
@@ -2210,6 +2286,136 @@ function persistEditorExpanded(paths: Set<string>) {
   } catch {
     // Ignore localStorage failures; the file tree should still work normally.
   }
+}
+
+function MobileWorkspaceLauncher({
+  workspaceMode,
+  plan,
+  root,
+  loading,
+  applyDisabled,
+  applyRuntimeEnabled,
+  open,
+  displayMode,
+  missingVariables,
+  canMergeBranch,
+  onOpenChange,
+  onFiles,
+  onDisplayMode,
+  onViewPlan,
+  onRuns,
+  onVariables,
+  onDiff,
+  onGit,
+  onCommitPush,
+  onMerge,
+  onApprove,
+  onTerraformSandbox,
+  onWorkspaceSandbox
+}: {
+  workspaceMode: WorkspaceMode;
+  plan: InfraPlan | null;
+  root: TerraformRoot | null;
+  loading: boolean;
+  applyDisabled: boolean;
+  applyRuntimeEnabled: boolean;
+  open: boolean;
+  displayMode: ChatDisplayMode;
+  missingVariables: number;
+  canMergeBranch: boolean;
+  onOpenChange: (open: boolean) => void;
+  onFiles: () => void;
+  onDisplayMode: () => void;
+  onViewPlan: () => void;
+  onRuns: () => void;
+  onVariables: () => void;
+  onDiff: () => void;
+  onGit: () => void;
+  onCommitPush: () => void;
+  onMerge: () => void;
+  onApprove: () => void;
+  onTerraformSandbox: (mode: SandboxMode) => void;
+  onWorkspaceSandbox: (mode: SandboxMode, allowNetwork?: boolean) => void;
+}) {
+  const approved = Boolean(plan?.status.includes("approved"));
+  const canMutate = approved && !applyDisabled && applyRuntimeEnabled;
+  const terraformDisabled = loading || !plan;
+  const npmDisabled = loading;
+
+  function run(action: () => void) {
+    onOpenChange(false);
+    action();
+  }
+
+  return (
+    <div className="absolute right-3 top-3 z-50 lg:hidden">
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        className={`grid h-10 w-10 place-items-center rounded-2xl border shadow-xl shadow-black/10 backdrop-blur transition ${
+          open ? "border-black bg-black text-white" : "border-gray-200 bg-white/90 text-gray-800"
+        }`}
+        aria-label={open ? "Close workspace actions" : "Open workspace actions"}
+        aria-expanded={open}
+      >
+        <Icon name={open ? "fa-xmark" : "fa-sliders"} />
+      </button>
+
+      {open ? (
+        <div className="sidebar-scrollbar absolute right-0 top-12 max-h-[calc(100vh-7rem)] w-[min(22rem,calc(100vw-1.5rem))] overflow-auto rounded-[1.5rem] border border-gray-200 bg-white/95 p-2 shadow-2xl shadow-black/15 backdrop-blur">
+          <div className="grid gap-1">
+            <ActionMenuButton icon="fa-folder-tree" label="Files" disabled={loading} onClick={() => run(onFiles)} />
+            <ActionMenuButton icon={displayMode === "focus" ? "fa-message" : "fa-circle-nodes"} label={displayMode === "focus" ? "Inspect mode" : "Focus mode"} disabled={loading} onClick={() => run(onDisplayMode)} />
+          </div>
+
+          <MenuDivider label={workspaceMode === "web" ? "NPM" : "Terraform"} />
+          {workspaceMode === "web" ? (
+            <div className="grid gap-1">
+              <ActionMenuButton icon="fa-download" label="NPM install" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-install", true))} />
+              <ActionMenuButton icon="fa-shield-halved" label="NPM audit" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-audit", true))} />
+              <ActionMenuButton icon="fa-list-check" label="NPM lint" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-lint"))} />
+              <ActionMenuButton icon="fa-vial" label="NPM test" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-test"))} />
+              <ActionMenuButton icon="fa-box" label="NPM build" disabled={npmDisabled} onClick={() => run(() => onWorkspaceSandbox("npm-build"))} />
+            </div>
+          ) : (
+            <div className="grid gap-1">
+              <ActionMenuButton icon="fa-code-branch" label="View plan" disabled={terraformDisabled} onClick={() => run(onViewPlan)} />
+              <ActionMenuButton icon="fa-clock-rotate-left" label="Run history" disabled={loading || !root} onClick={() => run(onRuns)} />
+              <ActionMenuButton icon="fa-keyboard" label={missingVariables ? `Inputs (${missingVariables})` : "Inputs"} disabled={loading || !root} onClick={() => run(onVariables)} />
+              <ActionMenuButton icon="fa-code" label="Terraform fmt" disabled={terraformDisabled} onClick={() => run(() => onTerraformSandbox("terraform-fmt"))} />
+              <ActionMenuButton icon="fa-terminal" label="Terraform plan" disabled={terraformDisabled} onClick={() => run(() => onTerraformSandbox("terraform-plan"))} />
+              {approved ? (
+                <>
+                  <ActionMenuButton icon="fa-rocket" label="Apply" danger disabled={loading || !canMutate} onClick={() => run(() => onTerraformSandbox("terraform-apply"))} />
+                  <ActionMenuButton icon="fa-trash" label="Destroy" subtleDanger disabled={loading || !canMutate} onClick={() => run(() => onTerraformSandbox("terraform-destroy"))} />
+                </>
+              ) : (
+                <ActionMenuButton icon="fa-check" label="Approve" primary disabled={terraformDisabled || Boolean(plan?.blocked)} onClick={() => run(onApprove)} />
+              )}
+            </div>
+          )}
+
+          <MenuDivider label="Git" />
+          <div className="grid gap-1">
+            <ActionMenuButton icon="fa-code-branch" label="View diff" disabled={loading} onClick={() => run(onDiff)} />
+            <ActionMenuButton icon="fa-cloud-arrow-up" label="Commit & push" disabled={loading} onClick={() => run(onCommitPush)} />
+            <ActionMenuButton icon="fa-code-merge" label="Merge" disabled={loading || !canMergeBranch} onClick={() => run(onMerge)} />
+            <ActionMenuButton icon="fa-code-commit" label="Git workspace" disabled={loading} onClick={() => run(onGit)} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MenuDivider({ label }: { label: string }) {
+  return (
+    <div className="my-2 flex items-center gap-2 px-2">
+      <span className="h-px flex-1 bg-gray-100" />
+      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">{label}</span>
+      <span className="h-px flex-1 bg-gray-100" />
+    </div>
+  );
 }
 
 function WorkspaceActionBar({

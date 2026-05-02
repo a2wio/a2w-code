@@ -194,10 +194,10 @@ export function DashboardShell({
   }
 
   return (
-    <main className="h-full overflow-hidden border border-gray-200 bg-white text-black">
+    <main className="relative h-full overflow-hidden border border-gray-200 bg-white text-black">
       <div className="flex h-full">
         <aside
-          className="group/sidebar relative z-40 h-full w-16 shrink-0"
+          className="group/sidebar relative z-40 hidden h-full w-16 shrink-0 lg:block"
           onMouseEnter={() => setNavigationOpen(true)}
           onMouseLeave={() => setNavigationOpen(false)}
           onBlur={(event) => {
@@ -251,6 +251,62 @@ export function DashboardShell({
             />
           </div>
         </aside>
+
+        <button
+          type="button"
+          onClick={() => setNavigationOpen(true)}
+          className={`absolute left-3 top-3 z-[70] grid h-10 w-10 place-items-center rounded-2xl border border-gray-200 bg-white/90 text-gray-800 shadow-xl shadow-black/10 backdrop-blur transition lg:hidden ${
+            navigationOpen ? "pointer-events-none opacity-0" : "opacity-100"
+          }`}
+          aria-label={`Open ${workspace.companyName} navigation`}
+        >
+          <AppLogo decorative className="h-8 w-8" />
+        </button>
+
+        <div
+          className={`absolute inset-0 z-[80] overflow-hidden transition duration-200 ease-out lg:hidden ${
+            navigationOpen ? "pointer-events-auto bg-black/10" : "pointer-events-none bg-black/0"
+          }`}
+          aria-hidden={!navigationOpen}
+        >
+          <div
+            className={`absolute inset-0 transition duration-[250ms] ease-out ${
+              navigationOpen ? "translate-x-0 opacity-100" : "-translate-x-full opacity-95"
+            }`}
+          >
+            <ExpandedSidebar
+              workspace={workspace}
+              threads={threads}
+              activeChatId={activeChatId}
+              isChat={isChat}
+              newChatActive={newChatActive}
+              homeHref={homeHref}
+              activeModal={modal}
+              activeMode={activeMode}
+              savingChatId={savingChatId}
+              creatingChat={creatingChat}
+              onRenameChat={renameChat}
+              onDeleteChat={deleteChat}
+              onNewChat={createChat}
+              onSwitchMode={switchMode}
+              onOpenModal={(nextModal) => {
+                setModal(nextModal);
+                setNavigationOpen(false);
+              }}
+              onNavigate={() => setNavigationOpen(false)}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setNavigationOpen(false)}
+            className={`absolute right-3 top-3 grid h-10 w-10 place-items-center rounded-2xl border border-gray-200 bg-white/90 text-gray-700 shadow-xl shadow-black/10 backdrop-blur transition delay-75 ${
+              navigationOpen ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0"
+            }`}
+            aria-label="Close navigation"
+          >
+            <Icon name="fa-xmark" />
+          </button>
+        </div>
 
         <section className="min-w-0 flex-1 overflow-hidden">
           {isChat ? (
