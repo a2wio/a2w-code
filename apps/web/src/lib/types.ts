@@ -167,6 +167,7 @@ export type TerraformPlanSummary = {
 export type SandboxRun = {
   id: string;
   workspaceId: string;
+  chatId?: string;
   planId?: string;
   rootPath?: string;
   mode: "terraform-fmt" | "validate" | "terraform-plan" | "terraform-apply" | "terraform-destroy" | "npm-install" | "npm-audit" | "npm-lint" | "npm-test" | "npm-build";

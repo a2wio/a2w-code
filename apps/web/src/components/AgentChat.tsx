@@ -386,7 +386,11 @@ export function AgentChat({
     return sandboxRuns.filter((run) => run.planId === selectedPlan.id);
   }, [sandboxRuns, selectedPlan]);
   const selectedRun = selectedRuns?.at(-1) || null;
-  const latestFailedSandboxRun = useMemo(() => sandboxRuns.filter((run) => run.status === "failed").at(-1) || null, [sandboxRuns]);
+  const activeSandboxRuns = useMemo(() => {
+    if (activeChatId === "new") return [];
+    return sandboxRuns.filter((run) => sandboxRunBelongsToChat(run, activeChatId, plans));
+  }, [activeChatId, plans, sandboxRuns]);
+  const latestFailedSandboxRun = useMemo(() => activeSandboxRuns.filter((run) => run.status === "failed").at(-1) || null, [activeSandboxRuns]);
   const missingRequiredVariables = useMemo(() => {
     return (selectedRoot?.variables || []).filter((variable) => variable.required && !variable.value);
   }, [selectedRoot?.variables]);
@@ -410,9 +414,9 @@ export function AgentChat({
     git,
     root: selectedRoot,
     selectedRun,
-    sandboxRuns,
+    sandboxRuns: activeSandboxRuns,
     chatSummary: activeChat?.focusSummary
-  }), [activeChat?.focusSummary, codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, sandboxRuns, selectedRoot, selectedRun]);
+  }), [activeChat?.focusSummary, activeSandboxRuns, codexPane, codexTurns, git, loading, missingRequiredVariables.length, pendingStatus, selectedRoot, selectedRun]);
   const visualFocusStatus = codexCancelFlash ? "cancelled" : sandboxFailureFlash ? "error" : focusState.status;
   const visualFocusLabel = codexCancelFlash ? "Stopped" : sandboxFailureFlash ? "Action failed" : focusState.statusLabel;
   const visualFocusDetail = codexCancelFlash
@@ -1724,7 +1728,7 @@ function ChatDisplayModeToggle({ mode, onChange }: { mode: ChatDisplayMode; onCh
     <button
       type="button"
       onClick={() => onChange(focus ? "transcript" : "focus")}
-      className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full border px-3 text-xs font-semibold transition ${
+      className={`inline-flex h-10 shrink-0 items-center gap-2 rounded-full border px-4 text-xs font-semibold transition ${
         focus
           ? "border-black bg-black text-white hover:bg-gray-800"
           : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-black"
@@ -1754,6 +1758,12 @@ function buildChatThreads(chats: Chat[], messages: Message[], plans: InfraPlan[]
         icon: relatedPlan?.status.includes("approved") ? "fa-circle-check" : chat.codexThreadId ? "fa-wand-magic-sparkles" : "fa-message"
       };
     });
+}
+
+function sandboxRunBelongsToChat(run: SandboxRun, activeChatId: string, plans: InfraPlan[]) {
+  if (run.chatId) return run.chatId === activeChatId;
+  if (!run.planId) return false;
+  return plans.some((plan) => plan.id === run.planId && plan.chatId === activeChatId);
 }
 
 function EditorFileRail({

@@ -310,7 +310,7 @@ export function CodexFocusSphere({
         <button
           type="button"
           onClick={onShowTranscript}
-          className="absolute left-1/2 top-2 z-30 inline-flex h-9 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-3 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black sm:top-4"
+          className="absolute left-1/2 top-2 z-30 inline-flex h-10 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-4 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black"
           aria-label="Inspect mode"
         >
           <Icon name="fa-message" />
@@ -450,30 +450,37 @@ function ActionResponseSwitcher({
 
   return (
     <div
-      className={`absolute right-3 top-16 z-20 transition-[width] duration-300 sm:right-4 sm:top-16 ${
+      className={`absolute right-3 top-16 z-20 transition-[width] duration-300 sm:right-4 lg:top-2 ${
         activePane === "sandbox" && sandboxExpanded ? "w-[min(42rem,calc(100%-1.5rem))]" : "w-[min(22.5rem,calc(100%-1.5rem))]"
       }`}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
     >
-      {canSwitch ? (
-        <div className="mb-1.5 flex items-center justify-center gap-1">
-          {panes.map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setPane(item)}
-              className={`h-6 rounded-full border px-2 text-[10px] font-semibold uppercase tracking-[0.12em] backdrop-blur transition ${
-                activePane === item
-                  ? "border-gray-300 bg-white/80 text-gray-700 shadow-sm shadow-black/[0.03]"
-                  : "border-white/40 bg-white/20 text-gray-400 hover:bg-white/45 hover:text-gray-600"
-              }`}
-            >
-              {item === "codex" ? "Codex" : "Sandbox"}
-            </button>
-          ))}
+      <div className="mb-2 flex h-10 items-center justify-center lg:justify-end">
+        <div className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-white/80 p-1 shadow-sm shadow-black/[0.03] backdrop-blur">
+          {(["codex", "sandbox"] as const).map((item) => {
+            const available = item === "codex" ? hasCodex : hasSandbox;
+            const active = activePane === item && available;
+            return (
+              <button
+                key={item}
+                type="button"
+                disabled={!available}
+                onClick={() => available && setPane(item)}
+                className={`h-8 rounded-full px-3 text-[10px] font-semibold uppercase tracking-[0.12em] transition disabled:cursor-not-allowed ${
+                  active
+                    ? "bg-black text-white shadow-sm shadow-black/[0.04]"
+                    : available
+                      ? "text-gray-500 hover:bg-white hover:text-black"
+                      : "text-gray-300"
+                }`}
+              >
+                {item === "codex" ? "Codex" : "Sandbox"}
+              </button>
+            );
+          })}
         </div>
-      ) : null}
+      </div>
 
       <div className="overflow-hidden rounded-[1.6rem]">
         {activePane === "sandbox" && sandboxAction ? (
