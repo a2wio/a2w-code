@@ -149,6 +149,10 @@ async function ensureChat(workspaceId: string, chatId: string, message: string):
     const existing = data.chats.find((item) => item.id === chatId && item.workspaceId === workspaceId);
     if (existing) {
       existing.updatedAt = createdAt;
+      const existingMessages = data.messages.some((item) => item.chatId === existing.id && item.workspaceId === workspaceId);
+      if (!existingMessages && isUntitledChat(existing.title)) {
+        existing.title = chatTitle(message);
+      }
       return existing;
     }
 
@@ -250,6 +254,10 @@ function chatTitle(message: string) {
   if (!clean) return "New chat";
   if (clean.startsWith("/model")) return "Codex model";
   return clean.length > 54 ? `${clean.slice(0, 51)}...` : clean;
+}
+
+function isUntitledChat(title: string) {
+  return title.trim().toLowerCase() === "new chat";
 }
 
 function modelResponse(raw: string, nextModel: string, currentModel?: string) {

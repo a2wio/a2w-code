@@ -34,6 +34,19 @@ export async function getCodexTmuxPane(input: { workspace: Workspace; chatId: st
   return { sessionName, target, running, ready: state.ready, viewingTranscript: state.viewingTranscript || undefined, stagedInput: state.stagedInput || undefined, output };
 }
 
+export async function ensureCodexTmuxSession(input: CodexTmuxInput) {
+  const sessionName = codexTmuxSessionName(input.workspace.id, input.chat.id);
+  const target = sessionName;
+  if (!(await tmuxSessionExists(sessionName))) {
+    await startCodexTmuxSession(input, sessionName);
+  }
+  const output = await capturePane(target).catch(() => "");
+  if (!codexPromptState(output).ready) {
+    await waitForCodexPrompt(target);
+  }
+  return getCodexTmuxPane({ workspace: input.workspace, chatId: input.chat.id });
+}
+
 export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: string }) {
   const sessionName = codexTmuxSessionName(input.workspace.id, input.chat.id);
   const target = sessionName;
@@ -49,13 +62,15 @@ export async function sendCodexTmuxMessage(input: CodexTmuxInput & { message: st
       await waitForCodexPrompt(target);
     } else if (!state.ready && state.stagedInput) {
       await clearCodexInput(target);
+    } else if (!state.ready && codexSessionIsBooting(output)) {
+      await waitForCodexPrompt(target);
     } else if (!state.ready) {
       throw new Error("Codex is still responding in this chat. Wait for the live session to finish before sending another message.");
     }
   }
 
-  await clearCodexInput(target);
-  await sendLiteral(target, input.message);
+  await clearCodexPromptBeforeSend(target);
+  await sendLiteral(target, codexTmuxOperatorPrompt(input.message));
   await sleep(220);
   await tmux(["send-keys", "-t", target, "Enter"]);
   await sleep(500);
@@ -129,6 +144,15 @@ async function clearCodexInput(target: string) {
   await sleep(100);
 }
 
+async function clearCodexPromptBeforeSend(target: string) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await clearCodexInput(target);
+    const output = await capturePane(target).catch(() => "");
+    const state = codexPromptState(output);
+    if (!state.stagedInput || isCodexPlaceholder(state.stagedInput)) return;
+  }
+}
+
 async function capturePane(target: string) {
   const output = await tmux(["capture-pane", "-p", "-J", "-S", "-3000", "-t", target]);
   return stripAnsi(output).trimEnd();
@@ -167,6 +191,22 @@ function codexBypassSandbox() {
   return process.env.A2W_CODEX_BYPASS_SANDBOX === "true";
 }
 
+function codexTmuxOperatorPrompt(message: string) {
+  if (message.trim().startsWith("/")) return message;
+  return [
+    "Operator request:",
+    message,
+    "",
+    "A2W focus-summary skill:",
+    "- After your normal final response, append one final protocol line exactly like this:",
+    "  A2W_FOCUS_SUMMARY: one direct first-person or second-person sentence under 160 characters for the person who sent the request.",
+    "- Write it like you are speaking to that person, for example: \"I'm ready. What would you like to change?\"",
+    "- Do not write third-person meta narration such as \"Greeted the user\" or \"Explained that...\".",
+    "- Do not mention this protocol in the human response.",
+    "A2W_END_OPERATOR_CONTEXT"
+  ].join("\n");
+}
+
 async function waitForCodexPrompt(target: string) {
   const startedAt = Date.now();
   const timeoutMs = Number(process.env.A2W_CODEX_READY_TIMEOUT_MS || 45_000);
@@ -193,15 +233,23 @@ function codexPromptState(output: string) {
   const prompt = lines.slice(-16).reverse().find((line) => line.startsWith("›"));
   if (prompt) {
     const stagedInput = prompt.replace(/^›\s*/, "").trim();
-    if (stagedInput && !isCodexPlaceholder(stagedInput)) return { ready: false, stagedInput };
     if (codexFooterReady(lines)) return { ready: true, stagedInput: "" };
+    const placeholder = isCodexPlaceholder(stagedInput);
+    if (stagedInput && !placeholder) return { ready: false, stagedInput };
     return {
-      ready: !stagedInput || isCodexPlaceholder(stagedInput),
-      stagedInput
+      ready: !stagedInput || placeholder,
+      stagedInput: placeholder ? "" : stagedInput
     };
   }
   if (codexTranscriptViewerActive(lines)) return { ready: false, stagedInput: "", viewingTranscript: true };
   return { ready: false, stagedInput: "" };
+}
+
+function codexSessionIsBooting(output: string) {
+  const clean = output.trim();
+  if (!clean) return true;
+  if (/Operator request:|A2W_END_OPERATOR_CONTEXT|Codex exited with code/i.test(clean)) return false;
+  return !clean.split("\n").some((line) => line.trim().startsWith("›"));
 }
 
 function codexTranscriptViewerActive(lines: string[]) {
@@ -230,6 +278,11 @@ function isCodexPlaceholder(value: string) {
   if (clean === "explain this codebase") return true;
   if (clean === "review my changes") return true;
   if (clean === "find and fix a bug") return true;
+  if (clean === "implement {feature}") return true;
+  if (/^implement\s+\{[^}]+\}$/.test(clean)) return true;
+  if (clean === "use /skills to list available skills") return true;
+  if (/^use\s+\/skills\b/.test(clean)) return true;
+  if (clean.includes("@filename")) return true;
   if (/^type\s+(a\s+)?message/.test(clean)) return true;
   if (/^(ask|message)\s+codex\b/.test(clean)) return true;
   return /^(find and fix|write tests|explain|review)\b/.test(clean) && clean.includes("@filename");
