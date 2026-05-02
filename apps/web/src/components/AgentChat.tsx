@@ -2372,11 +2372,11 @@ function MobileWorkspaceLauncher({
   }
 
   return (
-    <div className="absolute inset-x-3 top-3 z-50 flex justify-end lg:hidden">
+    <div className="pointer-events-none absolute inset-x-3 top-3 z-50 flex justify-end lg:hidden">
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
-        className={`grid h-10 w-10 place-items-center rounded-2xl border shadow-xl shadow-black/10 backdrop-blur transition ${
+        className={`pointer-events-auto grid h-10 w-10 place-items-center rounded-2xl border shadow-xl shadow-black/10 backdrop-blur transition ${
           open ? "border-black bg-black text-white" : "border-gray-200 bg-white/90 text-gray-800"
         }`}
         aria-label={open ? "Close workspace actions" : "Open workspace actions"}
@@ -2386,7 +2386,7 @@ function MobileWorkspaceLauncher({
       </button>
 
       {open ? (
-        <div className="sidebar-scrollbar absolute right-0 top-12 max-h-[calc(100vh-7rem)] w-full max-w-[22rem] overflow-auto rounded-[1.5rem] border border-gray-200 bg-white/95 p-2 shadow-2xl shadow-black/15 backdrop-blur">
+        <div className="pointer-events-auto sidebar-scrollbar absolute right-0 top-12 max-h-[calc(100vh-7rem)] w-full max-w-[22rem] overflow-auto rounded-[1.5rem] border border-gray-200 bg-white/95 p-2 shadow-2xl shadow-black/15 backdrop-blur">
           <div className="grid gap-1">
             <ActionMenuButton icon="fa-folder-tree" label="Files" disabled={loading} onClick={() => run(onFiles)} />
             <ActionMenuButton icon={displayMode === "focus" ? "fa-message" : "fa-circle-nodes"} label={displayMode === "focus" ? "Inspect mode" : "Focus mode"} disabled={loading} onClick={() => run(onDisplayMode)} />
