@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type { Chat, CloudProvider, ProviderConnection, Workspace } from "./types";
 import { workspaceRepoRoot } from "./data";
 import { chatMode, workspaceModeLabel } from "./workspace-mode";
+import { codexPlanSuggestionActive, codexPromptState, isCodexPlaceholder } from "./codex-prompt-state";
 
 const execFileAsync = promisify(execFile);
 
@@ -147,11 +148,19 @@ async function clearCodexInput(target: string) {
 
 async function clearCodexPromptBeforeSend(target: string) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    await dismissCodexPlanSuggestion(target);
     await clearCodexInput(target);
     const output = await capturePane(target).catch(() => "");
     const state = codexPromptState(output);
     if (!state.stagedInput || isCodexPlaceholder(state.stagedInput)) return;
   }
+}
+
+async function dismissCodexPlanSuggestion(target: string) {
+  const output = await capturePane(target).catch(() => "");
+  if (!codexPlanSuggestionActive(output.split("\n").map((line) => line.trim()).filter(Boolean))) return;
+  await tmux(["send-keys", "-t", target, "Escape"]);
+  await sleep(160);
 }
 
 async function capturePane(target: string) {
@@ -250,66 +259,11 @@ async function waitForCodexPrompt(target: string) {
   ].filter(Boolean).join("\n"));
 }
 
-function codexPromptState(output: string) {
-  const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (codexChoicePickerActive(output)) return { ready: false, stagedInput: "" };
-  if (codexInterruptActive(lines)) return { ready: false, stagedInput: "" };
-  const prompt = lines.slice(-16).reverse().find((line) => line.startsWith("›"));
-  if (prompt) {
-    const stagedInput = prompt.replace(/^›\s*/, "").trim();
-    if (codexFooterReady(lines)) return { ready: true, stagedInput: "" };
-    const placeholder = isCodexPlaceholder(stagedInput);
-    if (stagedInput && !placeholder) return { ready: false, stagedInput };
-    return {
-      ready: !stagedInput || placeholder,
-      stagedInput: placeholder ? "" : stagedInput
-    };
-  }
-  if (codexTranscriptViewerActive(lines)) return { ready: false, stagedInput: "", viewingTranscript: true };
-  return { ready: false, stagedInput: "" };
-}
-
 function codexSessionIsBooting(output: string) {
   const clean = output.trim();
   if (!clean) return true;
   if (/Operator request:|A2W_END_OPERATOR_CONTEXT|Codex exited with code/i.test(clean)) return false;
   return !clean.split("\n").some((line) => line.trim().startsWith("›"));
-}
-
-function codexTranscriptViewerActive(lines: string[]) {
-  const tail = lines.slice(-30).join(" ");
-  return /q to quit/i.test(tail) && /(?:↑\/↓|pgup\/pgdn|home\/end|to scroll|to page|to jump|edit prev|edit next)/i.test(tail);
-}
-
-function codexFooterReady(lines: string[]) {
-  return lines.slice(-8).some((line) => /gpt-[\w.-]+.*·.*\//i.test(line));
-}
-
-function codexInterruptActive(lines: string[]) {
-  return lines.slice(-16).some((line) => /(?:esc|ctrl-c|control-c)\s+to\s+interrupt/i.test(line));
-}
-
-function codexChoicePickerActive(output: string) {
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .some((line) => /^›?\s*\d+\.\s+/.test(line));
-}
-
-function isCodexPlaceholder(value: string) {
-  const clean = value.trim().toLowerCase();
-  if (!clean) return true;
-  if (clean === "explain this codebase") return true;
-  if (clean === "review my changes") return true;
-  if (clean === "find and fix a bug") return true;
-  if (clean === "implement {feature}") return true;
-  if (/^implement\s+\{[^}]+\}$/.test(clean)) return true;
-  if (clean === "use /skills to list available skills") return true;
-  if (/^use\s+\/skills\b/.test(clean)) return true;
-  if (clean.includes("@filename")) return true;
-  if (/^type\s+(a\s+)?message/.test(clean)) return true;
-  if (/^(ask|message)\s+codex\b/.test(clean)) return true;
-  return /^(find and fix|write tests|explain|review)\b/.test(clean) && clean.includes("@filename");
 }
 
 function sleep(ms: number) {
