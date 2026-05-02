@@ -310,7 +310,7 @@ export function CodexFocusSphere({
         <button
           type="button"
           onClick={onShowTranscript}
-          className="absolute left-1/2 top-2 z-30 inline-flex h-10 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-4 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black"
+          className="absolute left-1/2 top-2.5 z-30 inline-flex h-10 shrink-0 -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white/80 px-4 text-xs font-semibold text-gray-700 shadow-sm shadow-black/[0.03] backdrop-blur transition hover:border-gray-300 hover:bg-white hover:text-black"
           aria-label="Inspect mode"
         >
           <Icon name="fa-message" />
