@@ -10,6 +10,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { Modal } from "./Modal";
 import { Toast } from "./Toast";
 import { CodexFocusSphere, type CodexFocusAction, type CodexFocusStatus } from "./CodexFocusSphere";
+import { CODEX_MODEL_OPTIONS } from "@/lib/codex-models";
 
 const slashCommands = [
   {
@@ -263,6 +264,7 @@ export function AgentChat({
   provider,
   providerConnection,
   selectedTerraformRoot,
+  codexModel,
   initialPrompt,
   initialChatId,
   applyDisabled,
@@ -278,6 +280,7 @@ export function AgentChat({
   provider: CloudProvider;
   providerConnection?: Omit<ProviderConnection, "secrets">;
   selectedTerraformRoot?: string;
+  codexModel?: string;
   initialPrompt?: string;
   initialChatId?: string;
   applyDisabled: boolean;
@@ -326,6 +329,10 @@ export function AgentChat({
   const [codexPane, setCodexPane] = useState<CodexAppSessionState | null>(null);
   const [activeProviderConnection, setActiveProviderConnection] = useState(providerConnection);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [currentCodexModel, setCurrentCodexModel] = useState(codexModel || "");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelIndex, setModelIndex] = useState(() => codexModelIndex(codexModel || ""));
+  const [modelSaving, setModelSaving] = useState(false);
   const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("focus");
   const [engagedChatIds, setEngagedChatIds] = useState<Set<string>>(() => new Set());
   const [codexCancelFlash, setCodexCancelFlash] = useState(false);
@@ -539,6 +546,11 @@ export function AgentChat({
   }, [providerConnection]);
 
   useEffect(() => {
+    setCurrentCodexModel(codexModel || "");
+    setModelIndex(codexModelIndex(codexModel || ""));
+  }, [codexModel]);
+
+  useEffect(() => {
     shouldAutoScrollRef.current = true;
     const frame = window.requestAnimationFrame(() => scrollChatToBottom(scrollRef.current));
     return () => window.cancelAnimationFrame(frame);
@@ -676,6 +688,7 @@ export function AgentChat({
     }
     const message = value.trim();
     if (!message) return;
+    if (handleLocalSlashCommand(message)) return;
     const startingNewChat = activeChatId === "new";
     const submitController = new AbortController();
     submitAbortRef.current?.abort();
@@ -749,6 +762,15 @@ export function AgentChat({
 
   async function executeSlashCommand(command = exactSlashCommand || selectedSlashCommand) {
     if (!command || loading) return;
+    if (command.command === "/model") {
+      openModelPicker();
+      return;
+    }
+    if (command.command === "/permissions") {
+      setValue("");
+      flash("Codex permissions are fixed to full access for this deployment.");
+      return;
+    }
     if (command.kind === "terraform") {
       executeTerraformSlashCommand(command.action);
       return;
@@ -758,7 +780,7 @@ export function AgentChat({
       return;
     }
     if (codexBusy) return;
-    setPendingStatus(command.command === "/model" ? "Opening Codex model picker..." : `Running ${command.command} in Codex...`);
+    setPendingStatus(`Running ${command.command} in Codex...`);
     setLoading(true);
     try {
       const response = await fetch("/api/chat", {
@@ -784,6 +806,82 @@ export function AgentChat({
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleLocalSlashCommand(message: string) {
+    const modelMatch = message.match(/^\/model(?:\s+(.+))?$/i);
+    if (modelMatch) {
+      const nextModel = String(modelMatch[1] || "").trim();
+      if (!nextModel) {
+        openModelPicker();
+        return true;
+      }
+      void chooseCodexModel(nextModel === "default" ? "" : nextModel);
+      return true;
+    }
+    if (/^\/permissions$/i.test(message)) {
+      setValue("");
+      flash("Codex permissions are fixed to full access for this deployment.");
+      return true;
+    }
+    return false;
+  }
+
+  function openModelPicker() {
+    setValue("");
+    setModelPickerOpen(true);
+    setModelIndex(codexModelIndex(currentCodexModel));
+    setPendingStatus(null);
+  }
+
+  async function chooseCodexModel(nextModel: string) {
+    setModelSaving(true);
+    try {
+      const response = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ codexModel: nextModel })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not update Codex model.");
+      const model = data.workspace?.codexModel || "";
+      setCurrentCodexModel(model);
+      setModelIndex(codexModelIndex(model));
+      setModelPickerOpen(false);
+      setValue("");
+      flash(model ? `Codex model set to ${model}` : "Codex model reset to CLI default");
+      router.refresh();
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    } finally {
+      setModelSaving(false);
+    }
+  }
+
+  function handleModelPickerKeyDown(event: { key: string; shiftKey: boolean; preventDefault: () => void }) {
+    if (!modelPickerOpen || event.shiftKey) return false;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setModelIndex((current) => (current + 1) % CODEX_MODEL_OPTIONS.length);
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setModelIndex((current) => (current - 1 + CODEX_MODEL_OPTIONS.length) % CODEX_MODEL_OPTIONS.length);
+      return true;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const option = CODEX_MODEL_OPTIONS[modelIndex] || CODEX_MODEL_OPTIONS[0];
+      void chooseCodexModel(option.id);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setModelPickerOpen(false);
+      return true;
+    }
+    return false;
   }
 
   function executeTerraformSlashCommand(action: TerraformSlashAction) {
@@ -1482,7 +1580,15 @@ export function AgentChat({
             ) : null}
 
             <div className={`relative mx-auto max-w-3xl rounded-[1.75rem] border border-gray-200 bg-[#fbfbf9] p-2.5 shadow-2xl shadow-black/5 ${immersiveMode ? "mt-0" : "mt-2"}`}>
-              {codexPicker ? (
+              {modelPickerOpen ? (
+                <CodexModelPicker
+                  activeIndex={modelIndex}
+                  currentModel={currentCodexModel}
+                  saving={modelSaving}
+                  onHover={setModelIndex}
+                  onPick={(model) => void chooseCodexModel(model)}
+                />
+              ) : codexPicker ? (
                 <CodexChoicePicker picker={codexPicker} chatId={activeChatId} onPane={setCodexPane} onKey={(key) => sendCodexControlKey(key, { requirePicker: true })} />
               ) : slashPaletteOpen ? (
                 <SlashCommandPalette
@@ -1498,6 +1604,7 @@ export function AgentChat({
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
                   onKeyDown={(event) => {
+                    if (handleModelPickerKeyDown(event)) return;
                     if (handleCodexPickerKeyDown(event)) return;
                     if (slashPaletteOpen && event.key === "ArrowDown") {
                       event.preventDefault();
@@ -2711,6 +2818,60 @@ function terraformCallDirs(plan: InfraPlan) {
   return [...dirs].sort();
 }
 
+function CodexModelPicker({
+  activeIndex,
+  currentModel,
+  saving,
+  onHover,
+  onPick
+}: {
+  activeIndex: number;
+  currentModel: string;
+  saving: boolean;
+  onHover: (index: number) => void;
+  onPick: (model: string) => void;
+}) {
+  return (
+    <div className="absolute bottom-[calc(100%+10px)] left-0 z-30 w-full overflow-hidden rounded-[1.25rem] border border-gray-200 bg-white p-2 shadow-2xl shadow-black/10">
+      <div className="px-3 py-2">
+        <p className="text-sm font-semibold text-gray-900">Choose Codex Model</p>
+        <p className="mt-1 text-xs text-gray-500">Current: {currentModel || "Codex CLI default"}</p>
+      </div>
+      <div className="thin-scrollbar grid max-h-[360px] gap-1 overflow-auto">
+        {CODEX_MODEL_OPTIONS.map((option, index) => {
+          const active = index === activeIndex;
+          const selected = (option.id || "") === (currentModel || "");
+          return (
+            <button
+              key={option.label}
+              type="button"
+              disabled={saving}
+              onMouseEnter={() => onHover(index)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => onPick(option.id)}
+              className={`grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition disabled:opacity-60 ${
+                active ? "border-black bg-gray-100 text-black" : "border-transparent text-gray-600 hover:border-gray-200 hover:bg-gray-50 hover:text-black"
+              }`}
+            >
+              <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-semibold ${active ? "bg-black text-white" : "bg-gray-100 text-gray-500"}`}>
+                {saving && active ? <Icon name="fa-circle-notch fa-spin" /> : index + 1}
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold">{option.label}</span>
+                <span className="block truncate font-mono text-xs text-gray-500">{option.id || "default"}</span>
+              </span>
+              {selected ? <Icon name="fa-check" className="text-emerald-600" /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <p className="border-t border-gray-100 px-3 py-2 text-[11px] text-gray-400">
+        Use arrow keys, Enter, or Escape.
+      </p>
+    </div>
+  );
+}
+
 function SlashCommandPalette({
   commands,
   activeIndex,
@@ -2784,6 +2945,11 @@ function slashCommandAllowedForMode(command: SlashCommand, mode: WorkspaceMode) 
   if (command.kind === "terraform") return mode === "infra";
   if (command.kind === "npm") return mode === "web";
   return true;
+}
+
+function codexModelIndex(model: string) {
+  const index = CODEX_MODEL_OPTIONS.findIndex((option) => option.id === model);
+  return index >= 0 ? index : 0;
 }
 
 function CodexAppHistory({

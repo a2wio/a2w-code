@@ -193,7 +193,7 @@ class CodexAppServerClient {
       cwd: workspaceRepoRoot(input.workspace.id, chatMode(input.chat)),
       model: input.workspace.codexModel || process.env.A2W_CODEX_MODEL || null,
       approvalPolicy: "never",
-      sandboxPolicy: codexAppSandboxPolicy(workspaceRepoRoot(input.workspace.id, chatMode(input.chat))),
+      sandboxPolicy: codexAppSandboxPolicy(),
       summary: codexReasoningSummary()
     }, Number(process.env.A2W_CODEX_TURN_START_TIMEOUT_MS || 60_000)));
 
@@ -956,29 +956,12 @@ function chatKey(workspaceId: string, chatId: string) {
   return `${workspaceId}:${chatId}`;
 }
 
-function codexBypassSandbox() {
-  return process.env.A2W_CODEX_BYPASS_SANDBOX === "true";
-}
-
 function codexAppSandbox() {
-  if (codexBypassSandbox()) return "dangerFullAccess";
-  const value = process.env.A2W_CODEX_SANDBOX;
-  if (value === "readOnly" || value === "read-only") return "readOnly";
-  if (value === "dangerFullAccess" || value === "danger-full-access") return "dangerFullAccess";
-  return "workspaceWrite";
+  return "danger-full-access";
 }
 
-function codexAppSandboxPolicy(repoRoot: string): JsonObject {
-  const sandbox = codexAppSandbox();
-  if (sandbox === "dangerFullAccess") return { type: "dangerFullAccess" };
-  if (sandbox === "readOnly") return { type: "readOnly" };
-  return {
-    type: "workspaceWrite",
-    writableRoots: [repoRoot],
-    networkAccess: false,
-    excludeTmpdirEnvVar: false,
-    excludeSlashTmp: false
-  };
+function codexAppSandboxPolicy(): JsonObject {
+  return { type: "dangerFullAccess" };
 }
 
 function codexReasoningSummary() {

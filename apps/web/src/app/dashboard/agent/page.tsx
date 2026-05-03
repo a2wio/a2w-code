@@ -26,6 +26,7 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
       provider={data.workspace.cloudPreference}
       providerConnection={activeProviderConnection}
       selectedTerraformRoot={data.workspace.selectedTerraformRoot}
+      codexModel={data.workspace.codexModel}
       initialPrompt={params.prompt}
       initialChatId={chatParam}
       applyDisabled={Boolean(data.workspace.terraformApplyDisabled)}
