@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getCurrentContext } from "@/lib/auth";
-import { stopCodexTmuxSession } from "@/lib/codex-tmux";
+import { stopCodexAppSession } from "@/lib/codex-app-server";
 import { updateData } from "@/lib/data";
 import { errorJson, json } from "@/lib/http";
 
@@ -56,7 +56,7 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ chatId:
     });
 
     if (result.status === 404) return errorJson("Chat not found.", 404);
-    await stopCodexTmuxSession({ workspace: context.workspace, chatId }).catch(() => undefined);
+    await stopCodexAppSession({ workspace: context.workspace, chatId }).catch(() => undefined);
     return json({ ok: true });
   } catch (error) {
     return errorJson(error, 400);

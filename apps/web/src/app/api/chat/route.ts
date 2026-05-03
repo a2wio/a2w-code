@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 import { getCurrentContext, normalizeProvider } from "@/lib/auth";
+import { sendCodexAppMessage } from "@/lib/codex-app-server";
 import { codexBackendEnabled } from "@/lib/codex";
-import { sendCodexTmuxMessage } from "@/lib/codex-tmux";
 import { CODEX_MODEL_OPTIONS, sanitizeCodexModel } from "@/lib/codex-models";
 import { updateData } from "@/lib/data";
 import { createHelloFunctionPlan, materializeHelloFunctionFiles } from "@/lib/first-resource";
@@ -27,9 +27,7 @@ export async function POST(request: NextRequest) {
     const chat = await ensureChat(context.workspace.id, String(body.chatId || ""), message, mode);
     const codexEnabled = codexBackendEnabled(context.workspace);
 
-    const commandResponse = codexEnabled && message.startsWith("/")
-      ? null
-      : await handleFastChatPath(message, chat, mode, context.workspace.codexModel, context.data);
+    const commandResponse = await handleFastChatPath(message, chat, mode, context.workspace.codexModel, context.data);
     if (commandResponse) return json(commandResponse, 201);
 
     const provider = normalizeProvider(String(body.provider || context.workspace.cloudPreference));
@@ -49,7 +47,7 @@ export async function POST(request: NextRequest) {
         content: message,
         createdAt
       };
-      const pane = await sendCodexTmuxMessage({
+      const session = await sendCodexAppMessage({
         message,
         workspace: context.workspace,
         providerConnection,
@@ -64,7 +62,7 @@ export async function POST(request: NextRequest) {
         if (userMessage) data.messages.push(userMessage);
       });
 
-      return json({ messages: userMessage ? [userMessage] : [], chat, pane }, 201);
+      return json({ messages: userMessage ? [userMessage] : [], chat, session }, 201);
     }
 
     const serverlessIntent = !codexEnabled && /lambda|function|serverless|hello/i.test(message);

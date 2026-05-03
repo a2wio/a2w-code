@@ -932,7 +932,7 @@ export function OnboardingFlow({
                   Connect Codex on this host.
                 </h1>
                 <p className="mt-4 text-base leading-7 text-gray-600">
-                  A2W uses the self-hosted machine's Codex CLI login. Your OpenAI or ChatGPT credentials stay with Codex; this app only checks whether the local CLI is authenticated.
+                  A2W uses the self-hosted machine's Codex App Server login. Your OpenAI or ChatGPT credentials stay with Codex; this app only checks whether the local Codex runtime is authenticated.
                 </p>
               </div>
 
@@ -974,7 +974,7 @@ export function OnboardingFlow({
                 </label>
 
                 <p className="mt-4 text-sm leading-6 text-gray-600">
-                  Start the login session here. A2W opens <code className="rounded bg-gray-50 px-1.5 py-1">codex login --device-auth</code> in tmux and turns the terminal output into a browser URL and device code.
+                  Start the login session here. A2W asks Codex App Server for a device-code login and shows the browser URL plus one-time code.
                 </p>
 
                 <div className="mt-4 grid gap-2 sm:grid-cols-3">
@@ -1003,7 +1003,7 @@ export function OnboardingFlow({
                     className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-700 transition hover:border-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                   >
                     <Icon name="fa-stop" />
-                    Stop tmux
+                    Stop login
                   </button>
                 </div>
 

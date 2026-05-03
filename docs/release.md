@@ -1,13 +1,12 @@
 # Release Guide
 
-This release is packaged for self-hosted operation. The image includes the Codex CLI, Terraform CLI, Git, tmux, and Podman tooling. The host-first path still requires those tools on the host. Kubernetes deployments can run Terraform through short-lived in-cluster Jobs instead of a host Podman socket.
+This release is packaged for self-hosted operation. The image includes the Codex CLI with App Server support, Terraform CLI, Git, and Podman tooling. The host-first path still requires those tools on the host. Kubernetes deployments can run Terraform through short-lived in-cluster Jobs instead of a host Podman socket.
 
 ## Runtime Requirements
 
 - Node.js 20 or newer
 - npm
 - Git
-- tmux
 - Terraform CLI for host-first Codex-side checks. The container image already includes it.
 - Podman with a working Linux machine/socket for host-first sandbox runs
 - Codex CLI for host-first deployment. The container image already includes it.
@@ -33,13 +32,13 @@ cd apps/web
 npm run sandbox:build
 ```
 
-Authenticate Codex through onboarding, or run it directly on the host:
+Authenticate Codex through onboarding. The UI starts a Codex App Server device-code login and shows the verification URL plus one-time code. You can still authenticate the same local Codex store directly on the host:
 
 ```sh
 codex login --device-auth
 ```
 
-The onboarding UI can start `codex login --device-auth` inside tmux and render the verification URL plus device code from the same runtime that will later run chat.
+Chat sessions run through `codex app-server`, using App Server threads and turns instead of a terminal multiplexer.
 
 Build and start the UI:
 
@@ -54,7 +53,7 @@ Open `http://127.0.0.1:5173`.
 
 ## Container Image
 
-The app image includes the Next.js server, Codex CLI, Terraform CLI, Git, SSH client, tmux, ripgrep, jq, and basic Linux/network debugging tools. It also includes Podman tooling for host-first deployments where the app container can reach the host Podman socket. The app still executes gated Terraform actions through the separate `a2w-infra-sandbox:latest` image.
+The app image includes the Next.js server, Codex CLI, Terraform CLI, Git, SSH client, ripgrep, jq, and basic Linux/network debugging tools. It also includes Podman tooling for host-first deployments where the app container can reach the host Podman socket. The app still executes gated Terraform actions through the separate `a2w-infra-sandbox:latest` image.
 
 The image is intentionally immutable. Do not grant Codex root package-install permissions in the app pod; add missing tools to the image and rebuild instead.
 

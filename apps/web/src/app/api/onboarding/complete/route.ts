@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 import { getCurrentContext, normalizeProvider } from "@/lib/auth";
-import { getCodexLoginStatus } from "@/lib/codex";
+import { getCodexAppLoginStatus } from "@/lib/codex-app-server";
 import { sanitizeCodexModel } from "@/lib/codex-models";
 import { updateData } from "@/lib/data";
 import { createHelloFunctionPlan, materializeHelloFunctionFiles } from "@/lib/first-resource";
@@ -27,9 +27,9 @@ export async function POST(request: NextRequest) {
       const codexEnabled = Boolean(body.codexEnabled);
       const codexModel = sanitizeCodexModel(body.codexModel);
       if (codexEnabled) {
-        const codexStatus = await getCodexLoginStatus();
+        const codexStatus = await getCodexAppLoginStatus();
         if (!codexStatus.authenticated) {
-          return errorJson("Codex is not authenticated on this host. Run `codex login`, then verify Codex in onboarding.", 400);
+          return errorJson("Codex is not authenticated in App Server. Start Codex login in onboarding, then verify it.", 400);
         }
       }
       const fallbackGitProvider = cleanGitProvider(body.gitProvider);
@@ -85,9 +85,9 @@ export async function POST(request: NextRequest) {
     const codexEnabled = Boolean(body.codexEnabled);
     const codexModel = sanitizeCodexModel(body.codexModel);
     if (codexEnabled) {
-      const codexStatus = await getCodexLoginStatus();
+      const codexStatus = await getCodexAppLoginStatus();
       if (!codexStatus.authenticated) {
-        return errorJson("Codex is not authenticated on this host. Run `codex login`, then verify Codex in onboarding.", 400);
+        return errorJson("Codex is not authenticated in App Server. Start Codex login in onboarding, then verify it.", 400);
       }
     }
     const fallbackGitProvider = cleanGitProvider(body.gitProvider);

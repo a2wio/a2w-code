@@ -190,14 +190,15 @@ type ChatThread = {
   meta: string;
   icon: string;
 };
-type CodexTmuxPane = {
-  sessionName: string;
-  target: string;
+type CodexAppSessionState = {
+  threadId?: string;
+  activeTurnId?: string;
   running: boolean;
   ready: boolean;
   viewingTranscript?: boolean;
   stagedInput?: string;
   output: string;
+  turns?: CodexPaneTurn[];
 };
 type CodexControlKey = "up" | "down" | "enter" | "escape";
 type ChatDisplayMode = "transcript" | "focus";
@@ -322,7 +323,7 @@ export function AgentChat({
   const [editorFilesLoading, setEditorFilesLoading] = useState(false);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [filePanelPath, setFilePanelPath] = useState<string | null>(null);
-  const [codexPane, setCodexPane] = useState<CodexTmuxPane | null>(null);
+  const [codexPane, setCodexPane] = useState<CodexAppSessionState | null>(null);
   const [activeProviderConnection, setActiveProviderConnection] = useState(providerConnection);
   const [slashIndex, setSlashIndex] = useState(0);
   const [displayMode, setDisplayMode] = useState<ChatDisplayMode>("focus");
@@ -356,9 +357,9 @@ export function AgentChat({
   const slashPaletteOpen = slashOpen && !mobileActionsOpen;
   const selectedSlashCommand = slashMatches[slashIndex] || null;
   const exactSlashCommand = slashMatches.find((item) => item.command === slashQuery) || null;
-  const codexPicker = useMemo(() => editorMode ? parseCodexChoicePicker(codexPane?.output || "") : null, [editorMode, codexPane?.output]);
+  const codexPicker = useMemo<CodexPaneChoicePicker | null>(() => null, []);
   const codexCancellable = editorMode && activeChatId !== "new" && !profileNeedsSetup && Boolean(loading || pendingStatus || codexBusy || codexPicker || (codexPane?.running && !codexPane.ready));
-  const codexTurns = useMemo(() => parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output]);
+  const codexTurns = useMemo(() => codexPane?.turns?.length ? codexPane.turns : parseCodexPaneTurns(codexPane?.output || ""), [codexPane?.output, codexPane?.turns]);
 
   const chatThreads = useMemo(() => buildChatThreads(chatList, messages, plans), [chatList, messages, plans]);
   const activeChat = useMemo(() => chatList.find((chat) => chat.id === activeChatId) || null, [activeChatId, chatList]);
@@ -437,7 +438,7 @@ export function AgentChat({
       setCodexCancelFlash(false);
       cancelFlashTimeoutRef.current = null;
     }, 1500);
-    void sendCodexControlKey("escape", { flashCancel: true });
+    void interruptCodex({ flashCancel: true });
   }
 
   useEffect(() => {
@@ -594,10 +595,10 @@ export function AgentChat({
     let cancelled = false;
     async function poll() {
       try {
-        const response = await fetch(`/api/codex/tmux?chatId=${encodeURIComponent(activeChatId)}`);
+        const response = await fetch(`/api/codex/session?chatId=${encodeURIComponent(activeChatId)}`);
         if (!response.ok) return;
         const data = await response.json();
-        if (!cancelled) setCodexPane(data.pane || null);
+        if (!cancelled) setCodexPane(data.session || null);
       } catch {
         // The pane is best-effort UI state; send failures still surface through submit.
       }
@@ -723,8 +724,8 @@ export function AgentChat({
         setActiveChatId(data.chat.id);
       }
       if (data.plan?.id) setSelectedPlanId(data.plan.id);
-      if (data.pane) setCodexPane(data.pane);
-      flash(data.pane ? "Sent to Codex tmux pane" : data.plan ? "Plan generated and files written" : "Message sent");
+      if (data.session) setCodexPane(data.session);
+      flash(data.session ? "Sent to Codex App Server" : data.plan ? "Plan generated and files written" : "Message sent");
       void refreshEditorFiles();
       void refreshGit();
       if (data.chat?.id) router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
@@ -775,7 +776,7 @@ export function AgentChat({
         window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
         setActiveChatId(data.chat.id);
       }
-      if (data.pane) setCodexPane(data.pane);
+      if (data.session) setCodexPane(data.session);
       if (data.chat?.id) router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
@@ -843,18 +844,39 @@ export function AgentChat({
   }
 
   async function sendCodexControlKey(key: CodexControlKey, options: { requirePicker?: boolean; flashCancel?: boolean } = {}) {
+    if (key === "escape") {
+      await interruptCodex(options);
+      return;
+    }
     if (activeChatId === "new" || (options.requirePicker && !codexPicker)) return;
     const requestId = codexPickerKeyRequest.current + 1;
     codexPickerKeyRequest.current = requestId;
     try {
-      const response = await fetch("/api/codex/tmux", {
+      const response = await fetch("/api/codex/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chatId: activeChatId, action: "key", key })
+        body: JSON.stringify({ chatId: activeChatId, action: "interrupt" })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not control Codex.");
-      if (data.pane && requestId === codexPickerKeyRequest.current) setCodexPane(data.pane);
+      if (data.session && requestId === codexPickerKeyRequest.current) setCodexPane(data.session);
+      if (options.flashCancel) flash("Cancel sent to Codex");
+    } catch (error) {
+      flash(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function interruptCodex(options: { flashCancel?: boolean } = {}) {
+    if (activeChatId === "new") return;
+    try {
+      const response = await fetch("/api/codex/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chatId: activeChatId, action: "interrupt" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not interrupt Codex.");
+      if (data.session) setCodexPane(data.session);
       if (options.flashCancel) flash("Cancel sent to Codex");
     } catch (error) {
       flash(error instanceof Error ? error.message : String(error));
@@ -1212,7 +1234,7 @@ export function AgentChat({
       setProfileSetupOpen(false);
       window.sessionStorage.removeItem(WORKSPACE_RETURN_MODE_STORAGE_KEY);
       router.replace(`/dashboard/agent?chat=${encodeURIComponent(chatData.chat.id)}`);
-      void fetch("/api/codex/tmux", {
+      void fetch("/api/codex/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chatId: chatData.chat.id, action: "start" })
@@ -1418,7 +1440,7 @@ export function AgentChat({
           ) : (
             <div ref={scrollRef} onScroll={handleChatScroll} className="thin-scrollbar flex-1 overflow-y-auto overflow-x-hidden px-4 py-7 sm:px-8">
               <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-7">
-                <CodexTmuxHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
+                <CodexAppHistory pane={codexPane} fallbackMessages={visibleMessages} onMessageAction={handleMessageAction} />
                 {activeApprovalStatusPlan ? <ApprovalStatusBubble plan={activeApprovalStatusPlan} /> : null}
                 {pendingStatus ? <PendingBubble message={pendingStatus} /> : null}
                 {loading && !pendingStatus ? <ThinkingBubble /> : null}
@@ -2764,16 +2786,16 @@ function slashCommandAllowedForMode(command: SlashCommand, mode: WorkspaceMode) 
   return true;
 }
 
-function CodexTmuxHistory({
+function CodexAppHistory({
   pane,
   fallbackMessages,
   onMessageAction
 }: {
-  pane: CodexTmuxPane | null;
+  pane: CodexAppSessionState | null;
   fallbackMessages: Message[];
   onMessageAction: (action: MessageAction) => void;
 }) {
-  const parsedTurns = parseCodexPaneTurns(pane?.output || "");
+  const parsedTurns = pane?.turns?.length ? pane.turns : parseCodexPaneTurns(pane?.output || "");
   const turns = pane?.ready && parsedTurns.at(-1) && !parsedTurns.at(-1)?.response
     ? parsedTurns.slice(0, -1)
     : parsedTurns;
@@ -2807,7 +2829,7 @@ function CodexTmuxHistory({
       <div className="mx-auto flex min-h-[46vh] max-w-xl flex-col items-center justify-center text-center">
         <span className="grid h-12 w-12 place-items-center rounded-[1rem] bg-black text-sm font-semibold text-white">C</span>
         <h2 className="mt-5 text-3xl font-semibold tracking-[-0.04em]">Codex is ready.</h2>
-        <p className="mt-3 text-sm leading-7 text-gray-500">Send a message to start the tmux-backed Codex session.</p>
+        <p className="mt-3 text-sm leading-7 text-gray-500">Send a message to start the Codex App Server session.</p>
       </div>
     );
   }
@@ -2856,7 +2878,7 @@ function normalizeCodexPrompt(prompt: string) {
   return prompt.replace(/\s+/g, " ").trim();
 }
 
-function CodexTurnBlock({ turn, pane }: { turn: CodexPaneTurn; pane: CodexTmuxPane | null }) {
+function CodexTurnBlock({ turn, pane }: { turn: CodexPaneTurn; pane: CodexAppSessionState | null }) {
   return (
     <div className="grid min-w-0 gap-5">
       <article className="flex min-w-0 justify-end">
@@ -2893,7 +2915,7 @@ function CodexChoicePicker({
 }: {
   picker: CodexPaneChoicePicker;
   chatId: string;
-  onPane: (pane: CodexTmuxPane) => void;
+  onPane: (pane: CodexAppSessionState) => void;
   onKey: (key: CodexControlKey) => void;
 }) {
   const [choosing, setChoosing] = useState<number | null>(null);
@@ -2901,13 +2923,8 @@ function CodexChoicePicker({
   async function choose(index: number) {
     setChoosing(index);
     try {
-      const response = await fetch("/api/codex/tmux", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chatId, action: "choose", index, activeIndex: picker.activeIndex })
-      });
-      const data = await response.json();
-      if (data.pane) onPane(data.pane);
+      if (index !== picker.activeIndex) return;
+      onKey("enter");
     } finally {
       setChoosing(null);
     }
@@ -2967,7 +2984,7 @@ function codexPickerControlKey(key: string): CodexControlKey | null {
   return null;
 }
 
-function CodexStatusLine({ pane }: { pane: CodexTmuxPane | null }) {
+function CodexStatusLine({ pane }: { pane: CodexAppSessionState | null }) {
   const label = pane?.ready
     ? "Codex ready"
     : pane?.viewingTranscript
@@ -3026,7 +3043,7 @@ function buildCodexFocusState({
   sandboxRuns,
   chatSummary
 }: {
-  pane: CodexTmuxPane | null;
+  pane: CodexAppSessionState | null;
   turns: CodexPaneTurn[];
   loading: boolean;
   pendingStatus: string | null;
@@ -3158,7 +3175,7 @@ function focusStatusDetail(
   if (status === "files_changed") return changedFiles ? `${changedFiles} file${changedFiles === 1 ? "" : "s"} changed in the repository.` : "Codex is updating the workspace.";
   if (activeAction?.detail) return activeAction.detail;
   if (status === "tool_running") return "Codex is using commands, search, or file tools. The transcript is still being captured.";
-  if (status === "thinking") return "The tmux-backed Codex session is active. Watch the file rail for repository changes.";
+  if (status === "thinking") return "The Codex App Server session is active. Watch the file rail for repository changes.";
   if (status === "complete") return "Switch back to the response when you want the final explanation.";
   return "Use this mode when you care more about repository movement than every terminal line.";
 }
@@ -3381,10 +3398,13 @@ function CodexActionGroupSection({ kind, actions }: { kind: CodexPaneAction["kin
 }
 
 function CodexActionRow({ action }: { action: CodexPaneAction }) {
+  const detailClass = action.kind === "thinking"
+    ? "ml-1 break-words text-[11px] text-gray-500"
+    : "ml-1 break-all font-mono text-[11px] text-gray-500";
   return (
     <div className="min-w-0 rounded-xl bg-white px-3 py-2 text-xs text-gray-500 shadow-sm shadow-black/[0.02]">
       <span className="font-semibold text-gray-700">{action.label}</span>
-      {action.detail ? <span className="ml-1 break-all font-mono text-[11px] text-gray-500">{action.detail}</span> : null}
+      {action.detail ? <span className={detailClass}>{action.detail}</span> : null}
     </div>
   );
 }

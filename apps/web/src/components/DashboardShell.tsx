@@ -180,7 +180,7 @@ export function DashboardShell({
       window.dispatchEvent(new CustomEvent(CHAT_UPSERT_EVENT, { detail: data.chat }));
       setNavigationOpen(false);
       router.replace(`/dashboard/agent?chat=${encodeURIComponent(data.chat.id)}`);
-      void fetch("/api/codex/tmux", {
+      void fetch("/api/codex/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chatId: data.chat.id, action: "start" })

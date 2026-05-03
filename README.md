@@ -8,7 +8,7 @@ The MVP is single-admin and single-instance. Credentials are stored locally in `
 
 - Next.js, React, TypeScript, Tailwind CSS
 - Local JSON state in `.data/`
-- Codex CLI for chat-driven repository edits
+- Codex App Server for chat-driven repository edits
 - Terraform CLI in the web image for Codex-side static checks
 - Common repo/debug tools in the web image: `rg`, `jq`, `curl`, `dig`, `ip`, `ps`
 - Terraform sandbox via local Podman or Kubernetes Jobs
@@ -60,7 +60,7 @@ A2W_AGENT_BACKEND=codex
 A2W_ENABLE_TERRAFORM_APPLY=false
 ```
 
-Codex auth is handled during onboarding with:
+Codex auth is handled during onboarding through Codex App Server device-code login. The same local Codex auth store is used as the CLI:
 
 ```sh
 codex login --device-auth

@@ -23,7 +23,7 @@ ENV NODE_ENV=production \
     PORT=5173
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends bash ca-certificates curl dnsutils git iproute2 jq less openssh-client podman procps ripgrep tini tmux uidmap unzip && \
+    apt-get install -y --no-install-recommends bash ca-certificates curl dnsutils git iproute2 jq less openssh-client podman procps ripgrep tini uidmap unzip && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" && \
