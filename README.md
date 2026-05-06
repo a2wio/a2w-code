@@ -1,29 +1,23 @@
-# <img src="./apps/web/public/a2w-codex-logo.png" width="25"/> A2W Infra Agent Console
+# <img src="./apps/web/public/a2w-codex-logo.png" width="25"/> A2W Code
 
-Self-hosted infrastructure editor for platform engineers. A2W combines a Codex-backed chat, a Terraform repository browser, Git controls, and gated sandbox actions for `fmt`, `plan`, `apply`, and `destroy`.
+A2W Code is a self-hosted workspace for developers and platform engineers. It gives you a Next.js UI around a real repository, Codex-powered chat, Git controls, file browsing, and gated Terraform/NPM sandbox actions.
 
-The MVP is single-admin and single-instance. Credentials are stored locally in `.data/db.json`, encrypted with the instance secret, and injected only into sandbox runs.
+The app is single-admin and single-instance. Runtime state lives in `.data/`; provider credentials are encrypted with the instance key and are only injected into sandbox runs.
 
-## Stack
+## How It Works
 
-- Next.js, React, TypeScript, Tailwind CSS
-- Local JSON state in `.data/`
-- Codex App Server for chat-driven repository edits
-- Terraform CLI in the web image for Codex-side static checks
-- Common repo/debug tools in the web image: `rg`, `jq`, `curl`, `dig`, `ip`, `ps`
-- Terraform sandbox via local Podman or Kubernetes Jobs
-- DStack-style Terraform layout:
+- The web app is Next.js, React, TypeScript, and Tailwind.
+- Chat and code edits run through `codex app-server`, using App Server threads and turns.
+- Codex auth is handled in onboarding with App Server device-code login and persists in the normal Codex auth directory.
+- Codex runs with full repository access. Put A2W inside the container, VM, or Kubernetes namespace you trust.
+- Terraform and NPM checks run in a separate sandbox image through local Podman or short-lived Kubernetes Jobs.
+- Terraform projects follow the DStack layout:
   - modules: `infrastructure/terraform/modules/<provider>/<module>`
   - roots: `infrastructure/terraform/providers/<provider>/<region>/<stack>`
 
-## Repository Layout
+There is no tmux bridge in the current app path.
 
-- `apps/web`: Next.js application package
-- `sandbox`: Terraform runner image and scripts
-- `examples`: self-hosting examples
-- `docs`: release and design notes
-
-## Local Run
+## Local Development
 
 ```sh
 cd apps/web
@@ -32,24 +26,18 @@ npm install
 npm run dev
 ```
 
-Open:
+Open `http://127.0.0.1:5173`.
 
-```text
-http://127.0.0.1:5173
-```
-
-For production-style local run:
+For a production-style local run:
 
 ```sh
 npm run build
 npm start
 ```
 
-The web application package lives in `apps/web`. Runtime data is stored in the repository-level `.data/` directory by default.
-
 ## Required Env
 
-Set strong values before exposing the app:
+Set real values before exposing the app:
 
 ```sh
 A2W_ADMIN_USERNAME=admin
@@ -57,26 +45,22 @@ A2W_ADMIN_PASSWORD=change-me
 AUTH_SECRET=replace-me
 A2W_ENCRYPTION_KEY=replace-me
 A2W_AGENT_BACKEND=codex
+A2W_CODEX_REASONING_SUMMARY=detailed
+A2W_CODEX_TURN_START_TIMEOUT_MS=60000
 A2W_ENABLE_TERRAFORM_APPLY=false
 ```
 
-Codex auth is handled during onboarding through Codex App Server device-code login. The same local Codex auth store is used as the CLI:
+Optional model override:
 
 ```sh
-codex login --device-auth
+A2W_CODEX_MODEL=gpt-5.3-codex-spark
 ```
 
-For Kubernetes deployments where Codex's internal Linux sandbox cannot run:
+The UI also supports `/model` to pick or reset the Codex model for the workspace.
 
-```sh
-A2W_CODEX_BYPASS_SANDBOX=true
-```
+## Sandbox
 
-Keep that disabled for local host-first use.
-
-## Terraform Sandbox
-
-Local Podman, from the repository root:
+Local Podman:
 
 ```sh
 podman build -t a2w-infra-sandbox:latest -f sandbox/Containerfile sandbox
@@ -88,41 +72,30 @@ Kubernetes:
 
 ```sh
 A2W_SANDBOX_BACKEND=kubernetes
-A2W_SANDBOX_IMAGE=registry.k6nis.dev/a2w/infra-sandbox:v0.0.1
+A2W_SANDBOX_IMAGE=registry.k6nis.dev/a2w/infra-sandbox:sha-<commit>
 A2W_K8S_NAMESPACE=a2w-codex-terraform
 A2W_K8S_DATA_PVC=a2w-codex-terraform-data
-A2W_CODEX_BYPASS_SANDBOX=true
 ```
 
-In Kubernetes mode, A2W creates short-lived Jobs, mounts the workspace PVC, injects credentials through temporary Secrets, captures logs, and cleans up the run resources.
+In Kubernetes mode, A2W creates a temporary Job, mounts the workspace PVC, injects temporary credentials, streams logs back into the UI, and removes the Job resources.
 
-## Build Images
+## Images
 
-GitHub Actions workflow:
+The app image includes the Next.js server, Codex CLI with App Server support, Terraform, Git, SSH, `rg`, `jq`, `curl`, and basic network/process tools.
+
+GitHub Actions builds and pushes:
+
+```text
+registry.k6nis.dev/a2w/codex-terraform:v<version>
+registry.k6nis.dev/a2w/codex-terraform:sha-<commit>
+registry.k6nis.dev/a2w/infra-sandbox:v<version>
+registry.k6nis.dev/a2w/infra-sandbox:sha-<commit>
+```
+
+Workflow:
 
 ```text
 .github/workflows/container-images.yml
-```
-
-Required repository secrets:
-
-```text
-A2W_REGISTRY_USERNAME
-A2W_REGISTRY_PASSWORD
-```
-
-Images pushed:
-
-```text
-registry.k6nis.dev/a2w/codex-terraform:v0.0.1
-registry.k6nis.dev/a2w/infra-sandbox:v0.0.1
-```
-
-Local equivalent:
-
-```sh
-podman build --platform linux/amd64 -t registry.k6nis.dev/a2w/codex-terraform:v0.0.1 -f Dockerfile .
-podman build --platform linux/amd64 -t registry.k6nis.dev/a2w/infra-sandbox:v0.0.1 -f sandbox/Containerfile sandbox
 ```
 
 ## Checks
@@ -133,20 +106,21 @@ npm test
 npm run build
 ```
 
-Release helper:
+Full release check:
 
 ```sh
-cd apps/web
 npm run release:check
 ```
 
 ## Safety
 
-Terraform apply and destroy require:
+Codex has full access to the checked-out workspace. The deployment boundary is the host/container/Kubernetes namespace you run A2W in.
 
-- server env: `A2W_ENABLE_TERRAFORM_APPLY=true`
+Terraform apply and destroy still require all of these:
+
+- `A2W_ENABLE_TERRAFORM_APPLY=true`
 - workspace setting enabled
 - explicit UI approval
 - typed confirmation
 
-Treat `.data/` as sensitive. It contains app state, workspace files, and encrypted provider credentials.
+Treat `.data/` and the Codex auth mount as sensitive.
